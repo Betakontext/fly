@@ -1,0 +1,189 @@
+:root {
+  --fly-size: 40px;
+  --fly-min-duration: 900ms;
+  --fly-max-duration: 1800ms;
+  --perch-time: 5000ms;
+  --scare-radius: 90px;
+
+  /* Flügel-Shift in eingeklappter Pose */
+  --wing-fold-shift-x: 24px;  /* >0 = nach rechts */
+  --wing-fold-shift-y: 0px;   /* >0 = nach unten */
+}
+
+/* Alle direkten Kinder des Body links ausrichten (überschreibt center aus place-items) */
+body > * {
+  justify-self: start;   /* wirkt in Grid-Containern horizontal */
+}
+
+/* Optional: nur für bestimmte Elemente, wenn du es gezielter willst */
+.controls,
+.content,
+body > p {
+  justify-self: start;
+}
+
+/* Deine bestehenden Absatzabstände links/rechts konsistent setzen */
+body > p,
+.content {
+  text-align: left;
+  margin-left: 10em;
+  margin-right: 5em;
+}
+
+
+.controls {
+  width: 100%;
+  display: flex;
+  justify-content: flex-start; /* nach links */
+  align-items: center;
+  gap: 1rem;
+  margin-left: 5em;          /* Abstand vom linken Rand */
+}
+
+/* Button-Basis */
+#flyToggle {
+  appearance: none;
+  border: 2px solid transparent;
+  background: #9ca3af;  /* grau */
+  color: #fff;          /* weiß */
+  padding: 0.7rem 1rem;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  text-decoration: none; user-select: none;
+}
+#flyToggle:hover { transform: translateY(-1px); }
+#flyToggle:active { transform: translateY(0); }
+
+/* Zustand: Fliege lebt → Catch the fly! (grau/weiß) */
+#flyToggle.state-kill {
+  background: #6b7280; /* dunkleres Grau */
+  color: #fff;
+  border-color: transparent;
+}
+
+/* Zustand: keine Fliege → Get in touch :) (weiß/schwarz mit Rahmen) */
+#flyToggle.state-get {
+  background: #fff;
+  color: #111;
+  border-color: #111;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+}
+
+/* HUD ausblenden */
+.hud { display: none !important; }
+
+.fly {
+  position: fixed;
+  width: var(--fly-size);
+  height: var(--fly-size);
+  left: 0; top: 0;
+  pointer-events: none;
+  z-index: 9999;
+  transform-origin: center center;
+  filter: drop-shadow(0 3px 5px rgba(0,0,0,0.35));
+}
+
+/* Inline-SVG füllt den Container */
+.fly svg { width: 100%; height: 100%; display: block; }
+
+/* Pivots der Flügel für natürliche Rotation */
+.fly .wings-top    { transform-origin: 32px 38px; }
+.fly .wings-bottom { transform-origin: 32px 40px; }
+
+/* Pivots der Beine */
+.fly .legs-front,
+.fly .legs-middle,
+.fly .legs-back { transform-origin: 32px 44px; }
+
+/* Beim Sitzen: einmal einklappen + danach sanftes Sway */
+.fly.perching .wings-top {
+  animation: wings-fold-top 180ms ease-out forwards,
+             wings-sway-top 1400ms ease-in-out 180ms infinite alternate;
+}
+.fly.perching .wings-bottom {
+  animation: wings-fold-bottom 180ms ease-out forwards,
+             wings-sway-bottom 1600ms ease-in-out 180ms infinite alternate;
+}
+
+/* Beine beim Sitzen */
+.fly.perching .legs-middle,
+.fly.perching .legs-back {
+  animation: leg-wiggle 1000ms ease-in-out infinite alternate;
+}
+
+/* Vorderbeine: wackeln + leichtes Verlängern/Verkürzen */
+.fly.perching .legs-front {
+  animation:
+    leg-wiggle 1000ms ease-in-out infinite alternate,
+    front-legs-extend 900ms ease-in-out infinite alternate;
+  transform-origin: 32px 30px;
+}
+
+/* Beim Start des Flugs wieder ausklappen (wenn .perching entfernt wird) */
+.fly:not(.perching) .wings-top,
+.fly:not(.perching) .wings-bottom {
+  animation: wings-unfold 160ms ease-out;
+}
+
+/* Einklappen inkl. Versatz nach rechts/unten */
+@keyframes wings-fold-top {
+  from { transform: rotate(0deg) translate(0, 0); }
+  to   { transform: rotate(80deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+}
+@keyframes wings-fold-bottom {
+  from { transform: rotate(0deg) translate(0, 0); }
+  to   { transform: rotate(100deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+}
+
+/* Sway um die eingeklappte Pose (Versatz beibehalten) */
+@keyframes wings-sway-top {
+  from { transform: rotate(76deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+  to   { transform: rotate(84deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+}
+@keyframes wings-sway-bottom {
+  from { transform: rotate(96deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+  to   { transform: rotate(104deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+}
+
+/* Ausklappen: Versatz zurückfahren */
+@keyframes wings-unfold {
+  from { transform: rotate(90deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
+  to   { transform: rotate(0deg) translate(0, 0); }
+}
+
+/* Bein-Animationen */
+@keyframes leg-wiggle {
+  from { transform: translate(0.5px, -0.2px) rotate(-1.2deg); }
+  to   { transform: translate(-0.5px, 0.4px) rotate(1.0deg); }
+}
+@keyframes front-legs-extend {
+  from { transform: scaleY(0.7); }
+  to   { transform: scaleY(1.1); }
+}
+
+/* Blut-Fleck */
+.splat {
+  position: fixed; width: 26px; height: 26px; pointer-events: none; z-index: 9998;
+  transform: translate(-50%, -50%) rotate(0.0001deg);
+  opacity: 1; transition: opacity 0.4s ease;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.25));
+  animation: splat-pop 180ms ease-out;
+}
+@keyframes splat-pop {
+  from { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+.particle {
+  position: fixed; width: 6px; height: 6px; background: #ef4444; border-radius: 50%;
+  pointer-events: none; z-index: 9998; opacity: 0.95;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.25));
+  animation: particle-out 420ms ease-out forwards;
+}
+@keyframes particle-out {
+  from { transform: translate(0, 0) scale(1); opacity: 1; }
+  to   { transform: translate(var(--dx, 0), var(--dy, 0)) scale(0.6); opacity: 0; }
+}
