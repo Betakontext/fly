@@ -37,16 +37,16 @@ body > p,
   justify-content: flex-start; /* nach links */
   align-items: center;
   gap: 1rem;
-  margin-left: 5em;          /* Abstand vom linken Rand */
+  margin-left: 7.5em;          /* Abstand vom linken Rand */
 }
 
 /* Button-Basis */
 #flyToggle {
   appearance: none;
   border: 2px solid transparent;
-  background: #9ca3af;  /* grau */
-  color: #fff;          /* weiß */
-  padding: 0.7rem 1rem;
+  background: #fff;  /* grau */
+  color: #111;          /* weiß */
+  padding: rem 1rem;
   border-radius: 0.6rem;
   cursor: pointer;
   font-weight: 600;
@@ -59,8 +59,8 @@ body > p,
 
 /* Zustand: Fliege lebt → Catch the fly! (grau/weiß) */
 #flyToggle.state-kill {
-  background: #6b7280; /* dunkleres Grau */
-  color: #fff;
+  background: #fff; /* dunkleres Grau */
+  color: #111;
   border-color: transparent;
 }
 
@@ -68,7 +68,7 @@ body > p,
 #flyToggle.state-get {
   background: #fff;
   color: #111;
-  border-color: #111;
+  border-color: transparent;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
 
