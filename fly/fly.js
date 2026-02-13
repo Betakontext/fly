@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Christoph Medicus
+// Copyright (c) 2026 Christoph Medicus
+// Licensed under the MIT License
+
 (() => {
   const btn = document.getElementById('flyToggle');
   const hud = document.querySelector('.hud');
