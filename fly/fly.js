@@ -1,5 +1,4 @@
 // Copyright (c) 2026 Christoph Medicus
-// Copyright (c) 2026 Christoph Medicus
 // Licensed under the MIT License
 
 (() => {
