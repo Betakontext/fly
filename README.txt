@@ -9,5 +9,4 @@ ctrl+c in the terminal closes the server.
 
 Catch it, fork it, have fun.
 Build with AI assistance and deployed under MIT licence.
-CONTACT: Christoph Medicus
-dev@betakontext.de
+CONTACT: Christoph Medicus | dev@betakontext.de
