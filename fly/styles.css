@@ -8,24 +8,27 @@ Licensed under the MIT License  */
   --perch-time: 5000ms;
   --scare-radius: 90px;
 
+  /* Gehstrecke (kurz) */
+  --fly-walk-min: 36px;
+  --fly-walk-max: 64px;
+  /* langsamere Gehgeschwindigkeit */
+  --fly-walk-dur-min: 1400ms;
+  --fly-walk-dur-max: 2000ms;
+
   /* Flügel-Shift in eingeklappter Pose */
   --wing-fold-shift-x: 24px;  /* >0 = nach rechts */
   --wing-fold-shift-y: 0px;   /* >0 = nach unten */
 }
 
 /* Alle direkten Kinder des Body links ausrichten (überschreibt center aus place-items) */
-body > * {
-  justify-self: start;   /* wirkt in Grid-Containern horizontal */
-}
+body > * { justify-self: start; }
 
-/* Optional: nur für bestimmte Elemente, wenn du es gezielter willst */
+/* Optional: gezielter */
 .controls,
 .content,
-body > p {
-  justify-self: start;
-}
+body > p { justify-self: start; }
 
-/* Deine bestehenden Absatzabstände links/rechts konsistent setzen */
+/* Absatzabstände links/rechts konsistent */
 body > p,
 .content {
   text-align: left;
@@ -33,23 +36,22 @@ body > p,
   margin-right: 5em;
 }
 
-
 .controls {
   width: 100%;
   display: flex;
-  justify-content: flex-start; /* nach links */
+  justify-content: flex-start;
   align-items: center;
   gap: 1rem;
-  margin-left: 7.5em;          /* Abstand vom linken Rand */
+  margin-left: 7.5em;
 }
 
 /* Button-Basis */
 #flyToggle {
   appearance: none;
   border: 2px solid transparent;
-  background: #fff;  /* grau */
-  color: #111;          /* weiß */
-  padding: rem 1rem;
+  background: #fff;
+  color: #111;
+  padding: 0.7rem 1rem;        /* FIX: gültiges Padding */
   border-radius: 0.6rem;
   cursor: pointer;
   font-weight: 600;
@@ -60,14 +62,14 @@ body > p,
 #flyToggle:hover { transform: translateY(-1px); }
 #flyToggle:active { transform: translateY(0); }
 
-/* Zustand: Fliege lebt → Catch the fly! (grau/weiß) */
+/* Zustand: Fliege lebt → Catch the fly! (weiß/schwarz) */
 #flyToggle.state-kill {
-  background: #fff; /* dunkleres Grau */
+  background: #fff;
   color: #111;
   border-color: transparent;
 }
 
-/* Zustand: keine Fliege → Get in touch :) (weiß/schwarz mit Rahmen) */
+/* Zustand: keine Fliege → Get in touch :) (weiß/schwarz) */
 #flyToggle.state-get {
   background: #fff;
   color: #111;
@@ -129,6 +131,12 @@ body > p,
 .fly:not(.perching) .wings-top,
 .fly:not(.perching) .wings-bottom {
   animation: wings-unfold 160ms ease-out;
+}
+
+/* Lauf-Keyframes (nicht zwingend nötig, da wir WAAPI nutzen – belassen für evtl. CSS-Nutzung) */
+@keyframes fly-walk-forward {
+  from { transform: translate(var(--from-x), var(--from-y)) rotate(var(--angle)) scale(var(--scale)); }
+  to   { transform: translate(calc(var(--from-x) + var(--walk-dx)), calc(var(--from-y) + var(--walk-dy))) rotate(var(--angle)) scale(var(--scale)); }
 }
 
 /* Einklappen inkl. Versatz nach rechts/unten */
