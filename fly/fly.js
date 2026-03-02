@@ -9,6 +9,9 @@
   const LABEL_GET  = 'Get in touch :)';
   const MAIL_TO = 'info@betakontext.de';
 
+  const flies = []; // Array von DOM-Elementen: <div class="fly">
+
+
   let flyEl = null;
   let perchTimer = null;
   let lastFlightAngle = 0; // aus persistierter Flug-Endpose
@@ -593,6 +596,57 @@
     setButtonState(false);
   }
 
+  function explodeOneFly(el) {
+  // Laufende Web-Animations und CSS-Animations stoppen
+    try { el.getAnimations().forEach(a => a.cancel()); } catch {}
+
+    // Position ermitteln
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    // Partikel
+    const particles = 10 + Math.floor(Math.random() * 8);
+    for (let i = 0; i < particles; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 30 + Math.random() * 70;
+      p.style.left = `${cx}px`;
+      p.style.top = `${cy}px`;
+      p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
+      p.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
+      document.body.appendChild(p);
+      p.addEventListener('animationend', () => p.remove(), { once: true });
+    }
+
+    // Splat
+    const splat = document.createElement('div');
+    splat.className = 'splat';
+    const { size, background } = randomSplatStyle();
+    splat.style.left = `${cx}px`;
+    splat.style.top = `${cy}px`;
+    splat.style.width = `${size}px`;
+    splat.style.height = `${size}px`;
+    splat.style.backgroundImage = background;
+    splat.style.transform = `translate(-50%, -50%) rotate(${(Math.random() * 80 - 40)}deg)`;
+    document.body.appendChild(splat);
+
+    setTimeout(() => {
+      splat.style.opacity = '0';
+      setTimeout(() => splat.remove(), 420);
+    }, 5000);
+
+    // DOM entfernen
+    el.remove();
+
+    // Aus der Liste austragen
+    const i = flies.indexOf(el);
+    if (i >= 0) flies.splice(i, 1);
+    updateButtonLabel();
+  }
+
+
   window.addEventListener('mousemove', (e) => {
     mousePos = { x: e.clientX, y: e.clientY };
     if (!flyEl || !isAlive || !isPerching) return;
@@ -605,25 +659,84 @@
     }
   }, { passive: true });
 
+  function explodeAllFlies() {
+  // Kopie erstellen, weil explodeOneFly die Liste verändert
+    const snapshot = Array.from(flies);
+    for (const el of snapshot) {
+      explodeOneFly(el);
+    }
+    // Button-Status zurücksetzen und Haupt-Referenz leeren (falls genutzt)
+    setButtonState(false);
+    if (typeof flyEl !== 'undefined') flyEl = null;
+  }
+
+
   btn.addEventListener('click', (e) => {
     e.preventDefault();
     if (isAlive) {
-      explodeFly();
+      explodeAllFlies(); // statt explodeFly()
     } else {
-      spawnFly();
+      spawnFly(); // spawnt die Hauptfliege und pusht sie in flies
+      setButtonState(true);
       const subject = encodeURIComponent('Get in touch');
       const body = encodeURIComponent('Hallo betakontext,\n\nich habe eine Fliege erwischt :)');
       window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
     }
   });
 
+
+  // Globaler Klick: überall auf die Seite klicken → neue Fliege spawnen
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+
+    // Interaktive Elemente ignorieren
+    const interactiveSel = 'a, button, [role="button"], input, textarea, select, label, summary, details, [contenteditable=""], [contenteditable="true"]';
+    if (t.closest(interactiveSel)) return;
+
+    // Auch Elemente mit expliziten Klickhandlern optional ignorieren
+    // if (t.closest('[onclick]')) return;
+
+    // HUD/Controls-Bereich optional ausnehmen:
+    // if (t.closest('.controls')) return;
+
+    // Neue Fliege spawnen
+    spawnExtraFly();
+    setButtonState(true);
+  }, { passive: true });
+
+
+
+
+
   function setButtonState(alive) {
     isAlive = alive;
     btn.classList.toggle('state-kill', alive);
     btn.classList.toggle('state-get', !alive);
-    btn.textContent = alive ? LABEL_KILL : LABEL_GET;
     btn.setAttribute('aria-pressed', String(alive));
+    // Text steuert jetzt updateButtonLabel()
   }
+
+
+  function updateButtonLabel() {
+    const count = flies.length;
+    // Alive-Status ggf. synchronisieren (optional)
+    setButtonState(count > 0);
+
+    // Text: 1 → “Catch the fly!”, >1 → “Catch the flies!”
+    if (count === 1) {
+      btn.textContent = 'Catch the fly!';
+      btn.setAttribute('aria-label', 'Catch the fly!');
+    } else if (count > 1) {
+      btn.textContent = 'Catch the flies!';
+      btn.setAttribute('aria-label', 'Catch the flies!');
+    } else {
+      // 0 Fliegen: “Get in touch :)” (so wie bisher)
+      btn.textContent = 'Get in touch :)';
+      btn.setAttribute('aria-label', 'Get in touch :)');
+    }
+  }
+
+
 
   function spawnFly() {
     if (flyEl) return;
@@ -634,10 +747,186 @@
 
     flyEl.appendChild(createFlySVG());
     document.body.appendChild(flyEl);
+    flies.push(flyEl); // registrieren
+    updateButtonLabel();
     setButtonState(true);
     startFlight(start);
   }
 
-  setButtonState(true);
+ // Zusatz-Spawn: eigenständige Fliege ohne Button-Steuerung
+  function spawnExtraFly() {
+    const el = document.createElement('div');
+    el.className = 'fly';
+
+    // Lokaler Zustand für diese Fliege
+    let anim = null;
+    let perchTimer = null;
+    let lastAngle = 0;
+    let isPerchingLocal = false;
+
+    function isPointNearMe(x, y) {
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+      const scareR = cssVar('--scare-radius', 90);
+      return Math.hypot(cx - x, cy - y) <= scareR ? rect : null;
+    }
+
+    const onMove = (e) => {
+      if (!isPerchingLocal) return;
+      const rect = isPointNearMe(e.clientX, e.clientY);
+      if (!rect) return;
+      if (perchTimer) { clearTimeout(perchTimer); perchTimer = null; }
+      // Sofort wieder in den Flugzyklus
+      flyCycle();
+    };
+    window.addEventListener('mousemove', onMove, { passive: true });
+
+    function cleanup() {
+      window.removeEventListener('mousemove', onMove);
+      try { anim?.cancel(); } catch {}
+      if (perchTimer) clearTimeout(perchTimer);
+      explodeOneFly(el)
+      updateButtonLabel();
+    }
+
+    // Start im DOM
+    const start = randomViewportPos();
+    el.style.transform = `translate(${start.x}px, ${start.y}px) rotate(0rad) scale(${SIT_SCALE})`;
+    el.appendChild(createFlySVG());
+    document.body.appendChild(el);
+    flies.push(el); // registrieren
+    updateButtonLabel();
+
+    function endTransformFrom(elm) {
+      const tr = getComputedStyle(elm).transform;
+      if (!tr || tr === 'none') return { x: 0, y: 0, angle: 0 };
+      const m = tr.startsWith('matrix3d') ? tr.slice(9, -1).split(',').map(parseFloat)
+                                          : tr.slice(7, -1).split(',').map(parseFloat);
+      const x = tr.startsWith('matrix3d') ? m[12] : m[4];
+      const y = tr.startsWith('matrix3d') ? m[13] : m[5];
+      const a = Math.atan2(m[1], m[0]);
+      return { x, y, angle: a };
+    }
+
+    function flyCycle() {
+      isPerchingLocal = false;                 // nicht sitzend → darf erschrecken ignorieren
+      el.classList.remove('perching');
+      el.classList.remove('walking');
+
+      const to = randomViewportPos(8);
+      const duration = pickDuration();
+
+      // Aktuelle Startposition lesen und dann animieren
+      const rect = el.getBoundingClientRect();
+      const from = { x: rect.left, y: rect.top };
+
+      try { anim?.cancel(); } catch {}
+      const { keyframes, options } = buildChaoticKeyframes(from, to, duration, FLIGHT_SCALE);
+      anim = el.animate(keyframes, options);
+
+      anim.onfinish = () => {
+        try { anim.commitStyles?.(); } catch {}
+        anim.cancel();
+        const { x, y, angle } = endTransformFrom(el);
+        el.style.transform = `translate(${x}px, ${y}px) rotate(${angle}rad) scale(${FLIGHT_SCALE})`;
+        lastAngle = angle;
+        perch();
+      };
+    }
+
+    function perch() {
+      // Sitzen
+      const { x, y, angle } = endTransformFrom(el);
+      const jitter = (Math.random() * 24 - 12) * (Math.PI / 180);
+      const landAngle = angle + jitter;
+
+      el.style.transform = `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`;
+      el.classList.add('perching');
+      el.classList.remove('walking');
+
+      isPerchingLocal = true; // ab jetzt auf Maus reagieren
+
+      // Optional: ab und zu kurzer oder langer Walk
+      const doLong = Math.random() < 0.4;
+      const doShort = !doLong && Math.random() < 0.5;
+
+      if (doLong) {
+        const longDur = 5000 + Math.floor(Math.random() * 5001);
+        const totalDist = 80 + Math.random() * 140;
+
+        let { keyframes, options } = buildChaoticLongWalkKeyframes(x, y, landAngle, longDur, totalDist);
+        const startKF = { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`, offset: 0 };
+        if (!(keyframes.length && keyframes[0].offset === 0)) {
+          keyframes = [startKF, ...keyframes].sort((a,b)=> (a.offset??0)-(b.offset??0));
+        } else keyframes[0] = startKF;
+
+        el.classList.add('walking'); // Beine aus, Flügel bleiben gefaltet (per CSS)
+        el.style.transform = startKF.transform;
+
+        try { anim?.cancel(); } catch {}
+        anim = el.animate(keyframes, options);
+
+        anim.onfinish = () => {
+          try { anim.commitStyles?.(); } catch {}
+          const lastKF = anim.effect?.getKeyframes?.().slice(-1)[0];
+          if (lastKF?.transform) el.style.transform = lastKF.transform;
+          anim.cancel();
+          el.classList.remove('walking');
+          const perchMs = cssVar('--perch-time', 5000);
+          perchTimer = setTimeout(() => flyCycle(), perchMs);
+        };
+
+      } else if (doShort) {
+        el.classList.add('walking');
+
+        const minDist = cssVar('--fly-walk-min', 36);
+        const maxDist = cssVar('--fly-walk-max', 64);
+        const dist = minDist + Math.random() * (maxDist - minDist);
+
+        const minDur = cssVar('--fly-walk-dur-min', 1400);
+        const maxDur = cssVar('--fly-walk-dur-max', 2000);
+        const duration = Math.floor(minDur + Math.random() * (maxDur - minDur));
+
+        const dirX = Math.cos(landAngle), dirY = Math.sin(landAngle);
+        let fwdX = -dirY, fwdY = dirX;
+        if (fwdY > 0) { fwdX = -fwdX; fwdY = -fwdY; }
+        const orthoX = -fwdY, orthoY = fwdX;
+
+        const sideSign = Math.random() < 0.5 ? -1 : 1;
+        const sideAmp = dist * (0.08 + Math.random() * 0.06);
+
+        const endDx = fwdX * dist, endDy = fwdY * dist;
+        const midDx = fwdX * (dist * 0.5) + orthoX * (sideAmp * sideSign);
+        const midDy = fwdY * (dist * 0.5) + orthoY * (sideAmp * sideSign);
+        const rotAmp = 0.020 * sideSign;
+
+        const kf = [
+          { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
+          { transform: `translate(${x + midDx}px, ${y + midDy}px) rotate(${landAngle + rotAmp}rad) scale(${SIT_SCALE})` },
+          { transform: `translate(${x + endDx}px, ${y + endDy}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
+        ];
+
+        try { anim?.cancel(); } catch {}
+        anim = el.animate(kf, { duration, easing: 'ease-in-out', fill: 'forwards' });
+        anim.onfinish = () => {
+          try { anim.commitStyles?.(); } catch {}
+          anim.cancel();
+          el.classList.remove('walking');
+          const perchMs = cssVar('--perch-time', 5000);
+          perchTimer = setTimeout(() => flyCycle(), perchMs);
+        };
+
+      } else {
+        const perchMs = cssVar('--perch-time', 5000);
+        perchTimer = setTimeout(() => flyCycle(), perchMs);
+      }
+    }
+
+    flyCycle(); // Start
+  }
+
+
   spawnFly();
+  setButtonState(true);
+  updateButtonLabel();
 })();
