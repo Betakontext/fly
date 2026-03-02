@@ -11,6 +11,7 @@ Licensed under the MIT License  */
   /* Gehstrecke (kurz) */
   --fly-walk-min: 36px;
   --fly-walk-max: 64px;
+
   /* langsamere Gehgeschwindigkeit */
   --fly-walk-dur-min: 1400ms;
   --fly-walk-dur-max: 2000ms;
@@ -20,15 +21,12 @@ Licensed under the MIT License  */
   --wing-fold-shift-y: 0px;   /* >0 = nach unten */
 }
 
-/* Alle direkten Kinder des Body links ausrichten (überschreibt center aus place-items) */
+/* Layout/Hilfen */
 body > * { justify-self: start; }
-
-/* Optional: gezielter */
 .controls,
 .content,
 body > p { justify-self: start; }
 
-/* Absatzabstände links/rechts konsistent */
 body > p,
 .content {
   text-align: left;
@@ -45,41 +43,34 @@ body > p,
   margin-left: 7.5em;
 }
 
-/* Button-Basis */
+/* Button */
 #flyToggle {
   appearance: none;
   border: 2px solid transparent;
   background: #fff;
   color: #111;
-  padding: 0.7rem 1rem;        /* FIX: gültiges Padding */
+  padding: 0.7rem 1rem;
   border-radius: 0.6rem;
   cursor: pointer;
   font-weight: 600;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
   text-decoration: none; user-select: none;
+  /* keine transform-Transition → keine Interferenz */
+  transition: box-shadow 0.2s ease, background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 }
-#flyToggle:hover { transform: translateY(-1px); }
-#flyToggle:active { transform: translateY(0); }
+#flyToggle:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.14); }
+#flyToggle:active { box-shadow: 0 3px 8px rgba(0,0,0,0.12); }
 
-/* Zustand: Fliege lebt → Catch the fly! (weiß/schwarz) */
-#flyToggle.state-kill {
-  background: #fff;
-  color: #111;
-  border-color: transparent;
-}
-
-/* Zustand: keine Fliege → Get in touch :) (weiß/schwarz) */
+#flyToggle.state-kill,
 #flyToggle.state-get {
   background: #fff;
   color: #111;
   border-color: transparent;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
 }
 
-/* HUD ausblenden */
 .hud { display: none !important; }
 
+/* Fly-Container: nur WAAPI steuert transform! */
 .fly {
   position: fixed;
   width: var(--fly-size);
@@ -87,23 +78,43 @@ body > p,
   left: 0; top: 0;
   pointer-events: none;
   z-index: 9999;
+
   transform-origin: center center;
+  will-change: transform;
+  backface-visibility: hidden;
+  contain: layout style paint;
   filter: drop-shadow(0 3px 5px rgba(0,0,0,0.35));
+  transition: none !important;
 }
 
 /* Inline-SVG füllt den Container */
 .fly svg { width: 100%; height: 100%; display: block; }
 
-/* Pivots der Flügel für natürliche Rotation */
+/* Pivots der Flügel/Beine */
 .fly .wings-top    { transform-origin: 32px 38px; }
 .fly .wings-bottom { transform-origin: 32px 40px; }
-
-/* Pivots der Beine */
 .fly .legs-front,
 .fly .legs-middle,
-.fly .legs-back { transform-origin: 32px 44px; }
+.fly .legs-back    { transform-origin: 32px 44px; }
 
-/* Beim Sitzen: einmal einklappen + danach sanftes Sway */
+/* Default: keine Bein-/Frontlegs-Animation */
+.fly .legs-front,
+.fly .legs-middle,
+.fly .legs-back { animation: none; }
+
+/* Nur im Sitzen (perching) sollen die Beine/Frontlegs animieren */
+.fly.perching .legs-middle,
+.fly.perching .legs-back {
+  animation: leg-wiggle 1000ms ease-in-out infinite alternate;
+}
+.fly.perching .legs-front {
+  animation:
+    leg-wiggle 1000ms ease-in-out infinite alternate,
+    front-legs-extend 900ms ease-in-out infinite alternate;
+  transform-origin: 32px 30px;
+}
+
+/* Beim Sitzen: Flügel einklappen + sanftes Sway (nur Subgruppen) */
 .fly.perching .wings-top {
   animation: wings-fold-top 180ms ease-out forwards,
              wings-sway-top 1400ms ease-in-out 180ms infinite alternate;
@@ -113,33 +124,31 @@ body > p,
              wings-sway-bottom 1600ms ease-in-out 180ms infinite alternate;
 }
 
-/* Beine beim Sitzen */
-.fly.perching .legs-middle,
-.fly.perching .legs-back {
-  animation: leg-wiggle 1000ms ease-in-out infinite alternate;
+/* Während des Laufens (walking) Beine aus – Flügel bleiben gefaltet (perching bleibt) */
+.fly.perching.walking .legs-front,
+.fly.perching.walking .legs-middle,
+.fly.perching.walking .legs-back {
+  animation: none !important;
 }
 
-/* Vorderbeine: wackeln + leichtes Verlängern/Verkürzen */
-.fly.perching .legs-front {
-  animation:
-    leg-wiggle 1000ms ease-in-out infinite alternate,
-    front-legs-extend 900ms ease-in-out infinite alternate;
-  transform-origin: 32px 30px;
-}
+/* Frontbeine verschieben */
+.fly.perching.walking .legs-front { transform: translateY(4px); }
 
-/* Beim Start des Flugs wieder ausklappen (wenn .perching entfernt wird) */
+/* KEIN automatisches Ausklappen beim Nicht-Sitzen (verhindert Unfold beim Laufen) */
 .fly:not(.perching) .wings-top,
 .fly:not(.perching) .wings-bottom {
+  animation: none;
+}
+
+/* Optional: Wenn du beim Abheben wirklich ausklappen willst,
+   dann per JS kurz eine Klasse .takingoff setzen und hier animieren:
+.fly.takingoff .wings-top,
+.fly.takingoff .wings-bottom {
   animation: wings-unfold 160ms ease-out;
 }
+*/
 
-/* Lauf-Keyframes (nicht zwingend nötig, da wir WAAPI nutzen – belassen für evtl. CSS-Nutzung) */
-@keyframes fly-walk-forward {
-  from { transform: translate(var(--from-x), var(--from-y)) rotate(var(--angle)) scale(var(--scale)); }
-  to   { transform: translate(calc(var(--from-x) + var(--walk-dx)), calc(var(--from-y) + var(--walk-dy))) rotate(var(--angle)) scale(var(--scale)); }
-}
-
-/* Einklappen inkl. Versatz nach rechts/unten */
+/* Keyframes (nur Subgruppen) */
 @keyframes wings-fold-top {
   from { transform: rotate(0deg) translate(0, 0); }
   to   { transform: rotate(80deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
@@ -148,8 +157,6 @@ body > p,
   from { transform: rotate(0deg) translate(0, 0); }
   to   { transform: rotate(100deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
 }
-
-/* Sway um die eingeklappte Pose (Versatz beibehalten) */
 @keyframes wings-sway-top {
   from { transform: rotate(76deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
   to   { transform: rotate(84deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
@@ -158,14 +165,12 @@ body > p,
   from { transform: rotate(96deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
   to   { transform: rotate(104deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
 }
-
-/* Ausklappen: Versatz zurückfahren */
 @keyframes wings-unfold {
   from { transform: rotate(90deg) translate(var(--wing-fold-shift-x), var(--wing-fold-shift-y)); }
   to   { transform: rotate(0deg) translate(0, 0); }
 }
 
-/* Bein-Animationen */
+/* Bein-Animationen (Subgruppen) */
 @keyframes leg-wiggle {
   from { transform: translate(0.5px, -0.2px) rotate(-1.2deg); }
   to   { transform: translate(-0.5px, 0.4px) rotate(1.0deg); }
@@ -175,7 +180,7 @@ body > p,
   to   { transform: scaleY(1.1); }
 }
 
-/* Blut-Fleck */
+/* Blut-Fleck/Partikel */
 .splat {
   position: fixed; width: 26px; height: 26px; pointer-events: none; z-index: 9998;
   transform: translate(-50%, -50%) rotate(0.0001deg);
@@ -187,7 +192,6 @@ body > p,
   from { transform: translate(-50%, -50%) scale(0.6); opacity: 0; }
   to   { transform: translate(-50%, -50%) scale(1); opacity: 1; }
 }
-
 .particle {
   position: fixed; width: 6px; height: 6px; background: #ef4444; border-radius: 50%;
   pointer-events: none; z-index: 9998; opacity: 0.95;

@@ -11,10 +11,7 @@
 
   let flyEl = null;
   let perchTimer = null;
-  let landCount = 0;
-  let nextWalkIn = 2 + Math.floor(Math.random() * 3); // 2..4
   let lastFlightAngle = 0; // aus persistierter Flug-Endpose
-
   let isAlive = false;
   let currentAnim = null;
   let mousePos = { x: -9999, y: -9999 };
@@ -24,8 +21,10 @@
   const SIT_SCALE = 1.0;
   const FLIGHT_SCALE = 0.82;
 
-  // Laufmodus: preferUp = true → Vorwärtsvektor wird in obere Halbebene projiziert (dy < 0)
-  const preferUp = true;
+  // Walk-Trigger
+  const preferUp = true; // nur Short-Walk
+  if (typeof window._walkCountdown !== 'number') window._walkCountdown = 2 + Math.floor(Math.random() * 3); // 2..4
+  if (typeof window.longWalkCountdown !== 'number') window.longWalkCountdown = 3 + Math.floor(Math.random() * 3); // 3..5
 
   // CSS dynamisch einbinden (Pfad ggf. anpassen)
   function injectFlyStyles(href = 'fly/styles.css') {
@@ -200,7 +199,7 @@
     return Math.floor(minD + Math.random() * (maxD - minD));
   }
 
-  // Flug-Keyframes
+  // Flug-Keyframes (Jitter mild; bei Bedarf auf 1.0 setzen)
   function buildChaoticKeyframes(from, to, duration, scaleMul = 1) {
     const segments = 3 + Math.floor(Math.random() * 3);
     const pts = [from];
@@ -231,7 +230,7 @@
         const y2 = (1 - t2)**3 * prev.y + 3 * (1 - t2)**2 * t2 * c1.y + 3 * (1 - t2) * t2**2 * c2.y + t2**3 * next.y;
 
         const ang2 = Math.atan2(y2 - y, x2 - x);
-        const jitter = 0.95 + Math.random() * 0.1;
+        const jitter = 0.99 + Math.random() * 0.02;
 
         kf.push({ transform: `translate(${x}px, ${y}px) rotate(${ang2}rad) scale(${SIT_SCALE * scaleMul * jitter})` });
       }
@@ -241,19 +240,147 @@
     return { keyframes: kf, options: { duration, easing: 'linear', iterations: 1, fill: 'forwards' } };
   }
 
-  function setButtonState(alive) {
-    isAlive = alive;
-    btn.classList.toggle('state-kill', alive);
-    btn.classList.toggle('state-get', !alive);
-    btn.textContent = alive ? LABEL_KILL : LABEL_GET;
-    btn.setAttribute('aria-pressed', String(alive));
+  // Langer Walk: KEINE Pausen, glatter Pfad, kein End-Sprung
+  function buildChaoticLongWalkKeyframes(startX, startY, baseAngle, durationMs, totalDistPx) {
+    // Segmente 3..4
+    const segments = 3 + Math.floor(Math.random() * 2);
+    const pts = [{ x: startX, y: startY }];
+
+    // 90°-gedrehte Vorwärtsachse
+    let fwdX = -Math.sin(baseAngle);
+    let fwdY =  Math.cos(baseAngle);
+    const orthoX = -fwdY;
+    const orthoY =  fwdX;
+
+    const segLen = totalDistPx / segments;
+
+    // Seitliche Amplitude moderat
+    let sideAmpBase = segLen * (0.18 + Math.random() * 0.24); // 18–42%
+    if (totalDistPx < 120) sideAmpBase *= 0.6;
+    if (totalDistPx < 80)  sideAmpBase *= 0.5;
+
+    let px = startX, py = startY;
+    let sideSign = Math.random() < 0.5 ? -1 : 1;
+    for (let s = 0; s < segments; s++) {
+      const forwardStep = segLen * (0.92 + Math.random() * 0.16);   // 92–108%
+      const sideAmt = sideAmpBase * (0.9 + Math.random() * 0.5); // 90–140%
+      if (Math.random() < 0.3) sideSign *= -1;
+
+      px += fwdX * forwardStep + orthoX * sideAmt * sideSign;
+      py += fwdY * forwardStep + orthoY * sideAmt * sideSign;
+      pts.push({ x: px, y: py });
+    }
+
+    // Dichteres Sampling
+    const samplesPerSeg = 32;
+    const totalSamples = samplesPerSeg * segments;
+
+    function P(i) { return pts[Math.min(Math.max(i, 0), pts.length - 1)]; }
+    function unwrap(prev, curr) {
+      let d = curr - prev;
+      while (d > Math.PI)  d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      return prev + d;
+    }
+
+    let prevAngle = null;
+    const baseKf = [];
+
+    for (let i = 0; i <= totalSamples; i++) {
+      const tGlobal = i / totalSamples;
+      const segF = tGlobal * (pts.length - 1);
+      const idx = Math.floor(segF);
+      const t = segF - idx;
+
+      // korrekte Catmull-Rom
+      const p0 = P(idx - 1), p1 = P(idx), p2 = P(idx + 1), p3 = P(idx + 2);
+      const t2 = t * t, t3 = t2 * t;
+
+      let x =
+        0.5 * ( (2*p1.x) +
+                (-p0.x + p2.x) * t +
+                (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * t2 +
+                (-p0.x + 3*p1.x - 3*p2.x + p3.x) * t3 );
+
+      let y =
+        0.5 * ( (2*p1.y) +
+                (-p0.y + p2.y) * t +
+                (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * t2 +
+                (-p0.y + 3*p1.y - 3*p2.y + p3.y) * t3 );
+
+      // Tangente
+      const tAhead = Math.min(1, t + 1 / totalSamples);
+      const tA2 = tAhead * tAhead, tA3 = tA2 * tAhead;
+
+      const xA =
+        0.5 * ( (2*p1.x) +
+                (-p0.x + p2.x) * tAhead +
+                (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * tA2 +
+                (-p0.x + 3*p1.x - 3*p2.x + p3.x) * tA3 );
+      const yA =
+        0.5 * ( (2*p1.y) +
+                (-p0.y + p2.y) * tAhead +
+                (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * tA2 +
+                (-p0.y + 3*p1.y - 3*p2.y + p3.y) * tA3 );
+
+      const tangentialAngle = Math.atan2(yA - y, xA - x);
+      const angle = tangentialAngle + Math.PI / 2;
+
+      // Winkel glätten
+      let angleUnwrapped = angle;
+      if (prevAngle != null) {
+        angleUnwrapped = unwrap(prevAngle, angle);
+        const alpha = 0.30;
+        angleUnwrapped = prevAngle + (angleUnwrapped - prevAngle) * alpha;
+      }
+      prevAngle = angleUnwrapped;
+
+      // Positionsglättung
+      if (baseKf.length) {
+        const pxPrev = baseKf[baseKf.length - 1]._x;
+        const pyPrev = baseKf[baseKf.length - 1]._y;
+        const beta = 0.45;
+        x = pxPrev + (x - pxPrev) * beta;
+        y = pyPrev + (y - pyPrev) * beta;
+      }
+
+      baseKf.push({
+        transform: `translate(${x}px, ${y}px) rotate(${angleUnwrapped}rad) scale(${SIT_SCALE})`,
+        _x: x, _y: y, _angle: angleUnwrapped, _scale: SIT_SCALE,
+        offset: tGlobal
+      });
+    }
+
+    // Keine Pausen im LongWalk!
+    // Letzten Bewegungsframe exakt auf offset 1.0 setzen
+    if (baseKf.length && baseKf[baseKf.length - 1].offset !== 1) {
+      const last = baseKf[baseKf.length - 1];
+      baseKf[baseKf.length - 1] = { ...last, offset: 1.0 };
+    }
+
+    // Ausgabe (nur Bewegungsframes)
+    const merged = baseKf.map(({ transform, offset }) => ({ transform, offset }))
+                         .sort((a, b) => (a.offset ?? 0) - (b.offset ?? 0));
+
+    // Safety: keine zwei unterschiedlichen transforms am selben offset
+    for (let i = 1; i < merged.length; i++) {
+      if ((merged[i].offset ?? -1) === (merged[i-1].offset ?? -2) &&
+          merged[i].transform !== merged[i-1].transform) {
+        const delta = 1 / totalSamples;
+        merged[i].offset = Math.min(1.0, (merged[i].offset ?? 0) + delta);
+      }
+    }
+
+    return { keyframes: merged, options: { duration: durationMs, easing: 'linear', iterations: 1, fill: 'forwards' } };
   }
 
   // Flug-Endpose persistieren, dann landen
   function startFlight(fromPos) {
     if (!flyEl) return;
     isPerching = false;
+    // Im Flug keinerlei Sitz-/Laufanimationen
     flyEl.classList.remove('perching');
+    flyEl.classList.remove('walking');
 
     const from = fromPos || currentFlyPos();
     const to = randomViewportPos(8);
@@ -277,7 +404,7 @@
     };
   }
 
-  // Landen + optional laufen (preferUp aktiv)
+  // Landen + optional laufen
   function startPerch() {
     if (!flyEl) return;
     isPerching = true;
@@ -291,19 +418,73 @@
     // Position aus Matrix
     const { x, y } = getElementTranslate(flyEl);
 
-    // Sitzpose (größer)
+    // Sitzpose – ab hier dürfen Vorder-/Mittel-/Hinterbeine (per CSS) wackeln
     flyEl.style.transform = `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`;
     flyEl.classList.add('perching');
+    flyEl.classList.remove('walking');
 
-    // Entscheidung: zufällig ca. jedes 2.–4. Mal
-    // Variante: Zähler 2..4, der jedes Mal dekrementiert und bei 0 Lauf auslöst und neu würfelt
-    if (typeof window._walkCountdown !== 'number') {
-      window._walkCountdown = 2 + Math.floor(Math.random() * 3); // 2..4
-    }
+    // Entscheidung: Short-Walk etwa jedes 2..4te Mal
+    if (typeof window._walkCountdown !== 'number') window._walkCountdown = 2 + Math.floor(Math.random() * 3);
     window._walkCountdown--;
-    const willWalk = window._walkCountdown <= 0;
+    const willWalkShort = window._walkCountdown <= 0;
+    if (willWalkShort) window._walkCountdown = 2 + Math.floor(Math.random() * 3);
 
-    if (willWalk) {
+    // Langer Spaziergang alle 3..5 Landungen
+    if (typeof window.longWalkCountdown !== 'number') window.longWalkCountdown = 3 + Math.floor(Math.random() * 3);
+    window.longWalkCountdown--;
+    const willWalkLong = window.longWalkCountdown <= 0;
+    if (willWalkLong) window.longWalkCountdown = 3 + Math.floor(Math.random() * 3);
+
+    // Sicherheitsmaßnahmen
+    try { currentAnim?.cancel(); } catch {}
+    if (perchTimer) { clearTimeout(perchTimer); perchTimer = null; }
+
+    // LONG-WALK: KEINE PAUSEN, keine Sprünge, Flügel bleiben gefaltet, Beine aus
+    if (willWalkLong) {
+      const longDur = 5000 + Math.floor(Math.random() * 5001); // 5000..10000 ms
+      const totalDist = 80 + Math.random() * 140;              // ~80..220 px
+
+      let { keyframes, options } = buildChaoticLongWalkKeyframes(x, y, landAngle, longDur, totalDist);
+
+      // Exakter Startframe auf offset 0
+      const startKF = { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`, offset: 0 };
+      if (!(keyframes.length && keyframes[0].offset === 0)) {
+        keyframes = [startKF, ...keyframes].sort((a,b)=> (a.offset??0)-(b.offset??0));
+      } else {
+        keyframes[0] = startKF;
+      }
+
+      // Während des Laufens: Beine aus, Flügel bleiben gefaltet (perching bleibt), walking an
+      flyEl.classList.add('perching');
+      flyEl.classList.add('walking');
+      flyEl.style.transform = startKF.transform;
+
+      currentAnim = flyEl.animate(keyframes, options);
+
+      currentAnim.onfinish = () => {
+        try { currentAnim.commitStyles?.(); } catch {}
+
+        let lastKF = null;
+        try { lastKF = currentAnim.effect?.getKeyframes?.().slice(-1)[0] || null; } catch {}
+        if (lastKF?.transform) {
+          flyEl.style.transform = lastKF.transform;
+        } else {
+          const { x: nx, y: ny } = getElementTranslate(flyEl);
+          const { angle: na } = getElementAngleScale(flyEl);
+          flyEl.style.transform = `translate(${nx}px, ${ny}px) rotate(${na}rad) scale(${SIT_SCALE})`;
+        }
+
+        try { currentAnim.cancel(); } catch {}
+
+        // Nach dem Long-Walk: Sitzen bleibt, Beine wieder aktiv
+        flyEl.classList.remove('walking');
+
+        const perchMs = cssVar('--perch-time', 5000);
+        perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
+      };
+
+    } else if (willWalkShort) {
+      // Kurzlauf: perching bleibt (Flügel gefaltet), Beine aus via walking
       window._walkCountdown = 2 + Math.floor(Math.random() * 3);
       const cs = getComputedStyle(document.documentElement);
       const minDist = parseFloat(cs.getPropertyValue('--fly-walk-min')) || 24;
@@ -314,31 +495,25 @@
       const maxDur = parseInt(cs.getPropertyValue('--fly-walk-dur-max')) || 2000;
       const duration = Math.floor(minDur + Math.random() * (maxDur - minDur));
 
-      // 1) Kopf-Richtung
+      flyEl.classList.add('perching');
+      flyEl.classList.add('walking');
+
       const dirX = Math.cos(landAngle);
       const dirY = Math.sin(landAngle);
 
-      // 2) 90° drehen → fwd zeigt jetzt ‘hoch/runter’ relativ zu deiner Pose
       let fwdX = -dirY;
       let fwdY =  dirX;
 
-      // 3) preferUp auf den GEDREHTEN Vektor anwenden (entscheidend!)
-      if (fwdY > 0) {           // würde nach unten laufen? -> invertieren
-        fwdX = -fwdX;
-        fwdY = -fwdY;
-      }
+      if (preferUp && fwdY > 0) { fwdX = -fwdX; fwdY = -fwdY; }
 
-      // 4) Seitenachse orthogonal zu fwd (für eine sanfte Kurve)
       const orthoX = -fwdY;
       const orthoY =  fwdX;
 
-      // 5) leichte Kurve 8–14%, mal links/mal rechts
       const sideSign = Math.random() < 0.5 ? -1 : 1;
       const sideAmp = dist * (0.08 + Math.random() * 0.06);
 
-      // 6) Punkte: vorwärts (fwd) + ein Bogen (ortho)
       const endDx = fwdX * dist;
-      const endDy = fwdY * dist;  // dank preferUp immer < 0
+      const endDy = fwdY * dist;
 
       const midDx = fwdX * (dist * 0.5) + orthoX * (sideAmp * sideSign);
       const midDy = fwdY * (dist * 0.5) + orthoY * (sideAmp * sideSign);
@@ -350,14 +525,24 @@
         { transform: `translate(${x + endDx}px, ${y + endDy}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
       ];
 
-      flyEl.animate(kf, { duration, easing: 'ease-in-out', fill: 'forwards' });
+      currentAnim = flyEl.animate(kf, { duration, easing: 'ease-in-out', fill: 'forwards' });
+
+      currentAnim.onfinish = () => {
+        try { currentAnim.commitStyles?.(); } catch {}
+        currentAnim.cancel();
+
+        // Wieder Sitzen, Beine wieder aktiv
+        flyEl.classList.remove('walking');
+
+        const perchMs = cssVar('--perch-time', 5000);
+        perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
+      };
+
+    } else {
+      // Kein Walk → normalen perchTimer setzen
+      const perchMs = cssVar('--perch-time', 5000);
+      perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
     }
-
-
-
-    // Nach Sitzen/Laufen wieder starten
-    const perchMs = cssVar('--perch-time', 5000);
-    perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
   }
 
   function explodeFly() {
@@ -431,6 +616,14 @@
       window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
     }
   });
+
+  function setButtonState(alive) {
+    isAlive = alive;
+    btn.classList.toggle('state-kill', alive);
+    btn.classList.toggle('state-get', !alive);
+    btn.textContent = alive ? LABEL_KILL : LABEL_GET;
+    btn.setAttribute('aria-pressed', String(alive));
+  }
 
   function spawnFly() {
     if (flyEl) return;
