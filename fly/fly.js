@@ -696,7 +696,7 @@
       const count = activeCount > 0 ? activeCount : lastCaughtCount;
 
       const subject = encodeURIComponent(caughtSubject(count));
-      const greeting = 'Hello Betakontext,';
+      const greeting = 'Hello Christoph,';
       const line = caughtText(count);
       const body = encodeURIComponent(`${greeting}\n\n${line}\n`);
       window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
