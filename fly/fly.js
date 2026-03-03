@@ -670,19 +670,41 @@
     if (typeof flyEl !== 'undefined') flyEl = null;
   }
 
+  function caughtText(count) {
+    if (count === 1) return 'I caught a fly!';
+    return `I caught ${count} flies!`;
+  }
+
+  function caughtSubject(count) {
+    if (count === 1) return 'I caught a fly';
+    return `I caught ${count} flies`;
+  }
+
 
   btn.addEventListener('click', (e) => {
     e.preventDefault();
     if (isAlive) {
-      explodeAllFlies(); // statt explodeFly()
+      // Explodiere alle Fliegen
+      explodeAllFlies();
     } else {
-      spawnFly(); // spawnt die Hauptfliege und pusht sie in flies
-      setButtonState(true);
-      const subject = encodeURIComponent('Get in touch');
-      const body = encodeURIComponent('Hallo betakontext,\n\nich habe eine Fliege erwischt :)');
+      // Hier Anzahl der AKTIVEN Fliegen ermitteln, bevor gespawnt wird
+      const count = (typeof flies !== 'undefined' && Array.isArray(flies)) ? flies.length : (flyEl ? 1 : 0);
+
+      // E-Mail zusammenstellen (Subject/Body nach Wunsch)
+      const subject = encodeURIComponent(caughtSubject(count));
+      const greeting = 'Hello Betakontext,';
+      const line = caughtText(count); // "I caught a fly!" / "I caught 15 flies!"
+      const body = encodeURIComponent(`${greeting}\n\n${line}\n`);
+
+      // Mail öffnen
       window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
+
+      // Danach optional: Hauptfliege spawnen (falls du das aktuell so machst)
+      spawnFly();
     }
   });
+
+
 
 
   // Globaler Klick: überall auf die Seite klicken → neue Fliege spawnen
