@@ -7,7 +7,7 @@
 
   const LABEL_KILL = 'Catch the fly!';
   const LABEL_GET  = 'Get in touch :)';
-  const MAIL_TO = 'info@betakontext.de';
+  const MAIL_TO = 'dev@betakontext.de';
 
   const flies = []; // Array von DOM-Elementen: <div class="fly">
 
