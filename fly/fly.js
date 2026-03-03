@@ -20,6 +20,9 @@
   let mousePos = { x: -9999, y: -9999 };
   let isPerching = false;
 
+  let lastCaughtCount = 0;
+
+
   // Verhalten: Flug kleiner; Sitzen/Laufen größer
   const SIT_SCALE = 1.0;
   const FLIGHT_SCALE = 0.82;
@@ -677,32 +680,32 @@
 
   function caughtSubject(count) {
     if (count === 1) return 'I caught a fly';
-    return `I caught ${count} flies`;
+    return `I caught ${count} flies!`;
   }
 
 
   btn.addEventListener('click', (e) => {
     e.preventDefault();
     if (isAlive) {
-      // Explodiere alle Fliegen
-      explodeAllFlies();
+      // Anzahl VOR dem Explodieren sichern
+      lastCaughtCount = (Array.isArray(flies) ? flies.length : (flyEl ? 1 : 0));
+      explodeAllFlies(); // leert flies
     } else {
-      // Hier Anzahl der AKTIVEN Fliegen ermitteln, bevor gespawnt wird
-      const count = (typeof flies !== 'undefined' && Array.isArray(flies)) ? flies.length : (flyEl ? 1 : 0);
+      // Wenn keine aktiven Fliegen da sind, nimm den letzten Fang-Zähler
+      const activeCount = Array.isArray(flies) ? flies.length : (flyEl ? 1 : 0);
+      const count = activeCount > 0 ? activeCount : lastCaughtCount;
 
-      // E-Mail zusammenstellen (Subject/Body nach Wunsch)
       const subject = encodeURIComponent(caughtSubject(count));
       const greeting = 'Hello Betakontext,';
-      const line = caughtText(count); // "I caught a fly!" / "I caught 15 flies!"
+      const line = caughtText(count);
       const body = encodeURIComponent(`${greeting}\n\n${line}\n`);
-
-      // Mail öffnen
       window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
 
-      // Danach optional: Hauptfliege spawnen (falls du das aktuell so machst)
+      // Optional: danach wieder eine Fliege spawnen
       spawnFly();
     }
   });
+
 
 
 
