@@ -202,3 +202,57 @@ body > p,
   from { transform: translate(0, 0) scale(1); opacity: 1; }
   to   { transform: translate(var(--dx, 0), var(--dy, 0)) scale(0.6); opacity: 0; }
 }
+
+.swatter-cursor {
+  display: none;
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: min(460px, 82vw, 82vh);
+  aspect-ratio: 1;
+  pointer-events: none;
+  z-index: 99999;
+  transform: translate(-50%, -50%) rotate(-18deg);
+  transform-origin: 50% 50%;
+}
+
+.swatter-cursor svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+body.catch-mode,
+body.catch-mode * {
+  cursor: none !important;
+}
+
+body.catch-mode .swatter-cursor {
+  display: block;
+}
+
+.swatter-cursor.swatting {
+  animation: swatter-swat 220ms ease-out;
+}
+
+@keyframes swatter-swat {
+  0% {
+    transform: translate(-50%, -50%) rotate(-18deg) scale(1);
+  }
+  35% {
+    transform: translate(-50%, -50%) rotate(28deg) scale(.94, .86);
+  }
+  65% {
+    transform: translate(-50%, -50%) rotate(8deg) scale(1.03, .94);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(-18deg) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .swatter-cursor.swatting {
+    animation-duration: 1ms;
+  }
+}
+

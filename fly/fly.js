@@ -3,955 +3,786 @@
 
 (() => {
   const btn = document.getElementById('flyToggle');
-  const hud = document.querySelector('.hud');
+  if (!btn) return;
 
-  const LABEL_KILL = 'Catch the fly!';
-  const LABEL_GET  = 'Get in touch :)';
   const MAIL_TO = 'dev@betakontext.de';
+  const EMAIL_GREETING = 'Hello Christoph,';
+  const COOLDOWN_MS = 30_000;
 
-  const flies = []; // Array von DOM-Elementen: <div class="fly">
-
+  const flies = [];
+  const flyCleanup = new WeakMap();
+  const caughtFlies = new WeakSet();
 
   let flyEl = null;
-  let perchTimer = null;
-  let lastFlightAngle = 0; // aus persistierter Flug-Endpose
-  let isAlive = false;
-  let currentAnim = null;
-  let mousePos = { x: -9999, y: -9999 };
-  let isPerching = false;
-
+  let catchMode = false;
   let lastCaughtCount = 0;
+  let roundState = 'playing';
+  let cooldownTimer = null;
 
-
-  // Verhalten: Flug kleiner; Sitzen/Laufen größer
-  const SIT_SCALE = 1.0;
+  const SIT_SCALE = 1;
   const FLIGHT_SCALE = 0.82;
 
-  // Walk-Trigger
-  const preferUp = true; // nur Short-Walk
-  if (typeof window._walkCountdown !== 'number') window._walkCountdown = 2 + Math.floor(Math.random() * 3); // 2..4
-  if (typeof window.longWalkCountdown !== 'number') window.longWalkCountdown = 3 + Math.floor(Math.random() * 3); // 3..5
-
-  // CSS dynamisch einbinden (Pfad ggf. anpassen)
   function injectFlyStyles(href = 'fly/styles.css') {
-    const already = Array.from(document.styleSheets).some(s => s.href && s.href.includes('styles.css'));
-    if (!already) {
+    const alreadyLoaded = Array.from(document.styleSheets)
+      .some(sheet => sheet.href && sheet.href.includes('styles.css'));
+
+    if (!alreadyLoaded) {
       const link = document.createElement('link');
       link.rel = 'stylesheet';
       link.href = href;
       document.head.appendChild(link);
     }
   }
+
+  function injectSwatterStyles() {
+    if (document.getElementById('swatter-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'swatter-styles';
+    style.textContent = `
+      .swatter-cursor {
+        display: none;
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: min(230px, 45vw, 45vh);
+        aspect-ratio: 1;
+        pointer-events: none;
+        z-index: 99999;
+        transform: translate(-50%, -50%) rotate(-14deg);
+        transform-origin: 50% 50%;
+        filter: drop-shadow(3px 5px 4px rgba(0, 0, 0, .35));
+        will-change: transform;
+      }
+
+      .swatter-cursor svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
+      }
+
+      body.catch-mode,
+      body.catch-mode * {
+        cursor: none !important;
+      }
+
+      body.catch-mode .swatter-cursor {
+        display: block;
+      }
+
+      .swatter-cursor.swatting {
+        animation: swatter-swat 230ms cubic-bezier(.2, .8, .25, 1);
+      }
+
+      @keyframes swatter-swat {
+        0% {
+          transform: translate(-50%, -50%) rotate(-14deg) scale(1);
+        }
+        38% {
+          transform: translate(-50%, -50%) rotate(24deg) scale(.94, .9);
+        }
+        62% {
+          transform: translate(-50%, -50%) rotate(9deg) scale(1.02, .96);
+        }
+        100% {
+          transform: translate(-50%, -50%) rotate(-14deg) scale(1);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .swatter-cursor.swatting {
+          animation-duration: 1ms;
+        }
+      }
+    `;
+
+    document.head.appendChild(style);
+  }
+
   injectFlyStyles();
+  injectSwatterStyles();
 
   function cssVar(name, fallback) {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    if (!v) return fallback;
-    if (v.endsWith('ms')) return parseInt(v, 10);
-    if (v.endsWith('px')) return parseFloat(v);
-    const n = Number(v);
-    return isNaN(n) ? v : n;
+    const value = getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim();
+
+    if (!value) return fallback;
+    if (value.endsWith('ms')) return parseFloat(value);
+    if (value.endsWith('px')) return parseFloat(value);
+
+    const number = Number(value);
+    return Number.isNaN(number) ? fallback : number;
   }
 
   function randomViewportPos(margin = 12) {
-    const flySize = cssVar('--fly-size', 40);
-    const w = window.innerWidth, h = window.innerHeight;
-    const x = Math.random() * (w - flySize - margin * 2) + margin;
-    const y = Math.random() * (h - flySize - margin * 2) + margin;
-    return { x, y };
+    const size = cssVar('--fly-size', 40);
+    const width = Math.max(0, window.innerWidth - size - margin * 2);
+    const height = Math.max(0, window.innerHeight - size - margin * 2);
+
+    return {
+      x: margin + Math.random() * width,
+      y: margin + Math.random() * height
+    };
   }
 
-  // Inline-SVG
   function createFlySVG() {
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
+
     svg.setAttribute('viewBox', '0 0 64 64');
+    svg.setAttribute('aria-hidden', 'true');
 
-    const g = document.createElementNS(ns, 'g');
-    g.setAttribute('fill', 'none');
-    g.setAttribute('stroke', 'black');
-    g.setAttribute('stroke-width', '2');
-    g.setAttribute('stroke-linecap', 'round');
-    svg.appendChild(g);
-
-    // Flügel oben
-    const wingsTop = document.createElementNS(ns, 'g');
-    wingsTop.setAttribute('class', 'wings-top');
-    const w1 = document.createElementNS(ns, 'ellipse');
-    w1.setAttribute('cx', '22'); w1.setAttribute('cy', '38'); w1.setAttribute('rx', '23'); w1.setAttribute('ry', '7');
-    w1.setAttribute('fill', '#d2f0ff'); w1.setAttribute('fill-opacity', '0.35');
-    w1.setAttribute('stroke', '#2878a0'); w1.setAttribute('stroke-opacity', '0.6');
-    const w2 = w1.cloneNode(false);
-    w2.setAttribute('cx', '42');
-    wingsTop.appendChild(w1); wingsTop.appendChild(w2);
-    g.appendChild(wingsTop);
-
-    // Flügel unten
-    const wingsBottom = document.createElementNS(ns, 'g');
-    wingsBottom.setAttribute('class', 'wings-bottom');
-    const wb1 = document.createElementNS(ns, 'ellipse');
-    wb1.setAttribute('cx', '22'); wb1.setAttribute('cy', '40'); wb1.setAttribute('rx', '18'); wb1.setAttribute('ry', '8');
-    wb1.setAttribute('fill', '#d2f0ff'); wb1.setAttribute('fill-opacity', '0.35');
-    wb1.setAttribute('stroke', '#2878a0'); wb1.setAttribute('stroke-opacity', '0.6');
-    const wb2 = wb1.cloneNode(false);
-    wb2.setAttribute('cx', '42');
-    wingsBottom.appendChild(wb1); wingsBottom.appendChild(wb2);
-    g.appendChild(wingsBottom);
-
-    // Körper
-    const body = document.createElementNS(ns, 'ellipse');
-    body.setAttribute('cx', '32'); body.setAttribute('cy', '38'); body.setAttribute('rx', '7'); body.setAttribute('ry', '18');
-    body.setAttribute('fill', '#1f2937'); body.setAttribute('stroke', '#111827');
-    g.appendChild(body);
-
-    // Kopf
-    const head = document.createElementNS(ns, 'ellipse');
-    head.setAttribute('cx', '32'); head.setAttribute('cy', '25'); head.setAttribute('rx', '8'); head.setAttribute('ry', '5');
-    head.setAttribute('fill', '#1f2937'); head.setAttribute('stroke', '#111827');
-    g.appendChild(head);
-
-    // Vorderbeine
-    const legsFront = document.createElementNS(ns, 'g');
-    legsFront.setAttribute('class', 'legs-front');
-    const lf1 = document.createElementNS(ns, 'path');
-    lf1.setAttribute('d', 'M33 14 L22 35'); lf1.setAttribute('stroke', '#111');
-    const lf2 = document.createElementNS(ns, 'path');
-    lf2.setAttribute('d', 'M31 14 L42 35'); lf2.setAttribute('stroke', '#111');
-    legsFront.appendChild(lf1); legsFront.appendChild(lf2);
-    g.appendChild(legsFront);
-
-    // Mittelbeine
-    const legsMiddle = document.createElementNS(ns, 'g');
-    legsMiddle.setAttribute('class', 'legs-middle');
-    const lm1 = document.createElementNS(ns, 'path');
-    lm1.setAttribute('d', 'M22 32 L46 54'); lm1.setAttribute('stroke', '#111');
-    const lm2 = document.createElementNS(ns, 'path');
-    lm2.setAttribute('d', 'M42 32 L18 54'); lm2.setAttribute('stroke', '#111');
-    legsMiddle.appendChild(lm1); legsMiddle.appendChild(lm2);
-    g.appendChild(legsMiddle);
-
-    // Hinterbeine
-    const legsBack = document.createElementNS(ns, 'g');
-    const lb1 = document.createElementNS(ns, 'path');
-    const lb2 = document.createElementNS(ns, 'path');
-    legsBack.setAttribute('class', 'legs-back');
-    lb1.setAttribute('d', 'M28 48 L20 60'); lb1.setAttribute('stroke', '#111');
-    lb2.setAttribute('d', 'M36 48 L44 60'); lb2.setAttribute('stroke', '#111');
-    legsBack.appendChild(lb1); legsBack.appendChild(lb2);
-    g.appendChild(legsBack);
-
-    // Augen
-    const eye1 = document.createElementNS(ns, 'circle');
-    eye1.setAttribute('cx', '28'); eye1.setAttribute('cy', '24'); eye1.setAttribute('r', '2.5');
-    eye1.setAttribute('fill', '#fefefe'); eye1.setAttribute('stroke', '#333');
-    const eye2 = eye1.cloneNode(false);
-    eye2.setAttribute('cx', '36');
-    g.appendChild(eye1); g.appendChild(eye2);
+    svg.innerHTML = `
+      <g fill="none" stroke="black" stroke-width="2" stroke-linecap="round">
+        <g class="wings-top">
+          <ellipse cx="22" cy="38" rx="23" ry="7" fill="#d2f0ff"
+            fill-opacity=".35" stroke="#2878a0" stroke-opacity=".6"/>
+          <ellipse cx="42" cy="38" rx="23" ry="7" fill="#d2f0ff"
+            fill-opacity=".35" stroke="#2878a0" stroke-opacity=".6"/>
+        </g>
+        <g class="wings-bottom">
+          <ellipse cx="22" cy="40" rx="18" ry="8" fill="#d2f0ff"
+            fill-opacity=".35" stroke="#2878a0" stroke-opacity=".6"/>
+          <ellipse cx="42" cy="40" rx="18" ry="8" fill="#d2f0ff"
+            fill-opacity=".35" stroke="#2878a0" stroke-opacity=".6"/>
+        </g>
+        <ellipse cx="32" cy="38" rx="7" ry="18" fill="#1f2937" stroke="#111827"/>
+        <ellipse cx="32" cy="25" rx="8" ry="5" fill="#1f2937" stroke="#111827"/>
+        <g class="legs-front" stroke="#111">
+          <path d="M33 14L22 35"/>
+          <path d="M31 14L42 35"/>
+        </g>
+        <g class="legs-middle" stroke="#111">
+          <path d="M22 32L46 54"/>
+          <path d="M42 32L18 54"/>
+        </g>
+        <g class="legs-back" stroke="#111">
+          <path d="M28 48L20 60"/>
+          <path d="M36 48L44 60"/>
+        </g>
+        <circle cx="28" cy="24" r="2.5" fill="#fff" stroke="#333"/>
+        <circle cx="36" cy="24" r="2.5" fill="#fff" stroke="#333"/>
+      </g>`;
 
     return svg;
   }
 
-  function currentFlyPos() {
-    const rect = flyEl.getBoundingClientRect();
-    return { x: rect.left, y: rect.top, cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2 };
-  }
-
-  function getElementAngleScale(el) {
-    const st = getComputedStyle(el);
-    const tr = st.transform || 'matrix(1, 0, 0, 1, 0, 0)';
-    if (tr === 'none') return { angle: 0, scale: 1 };
-    const parts = tr.startsWith('matrix3d') ? tr.slice(9, -1).split(',').map(parseFloat)
-                                            : tr.slice(7, -1).split(',').map(parseFloat);
-    const a = parts[0], b = parts[1];
-    const scale = Math.hypot(a, b);
-    const angle = Math.atan2(b, a);
-    return { angle, scale };
-  }
-
-  function getElementTranslate(el) {
-    const st = getComputedStyle(el);
-    const tr = st.transform;
-    if (!tr || tr === 'none') return { x: 0, y: 0 };
-    if (tr.startsWith('matrix3d')) {
-      const m = tr.slice(9, -1).split(',').map(parseFloat);
-      return { x: m[12], y: m[13] };
-    } else {
-      const m = tr.slice(7, -1).split(',').map(parseFloat);
-      return { x: m[4], y: m[5] };
-    }
-  }
-
   function randomSplatStyle() {
-    const base = 18 + Math.floor(Math.random() * 18);
-    const coreColor = ['#b91c1c', '#991b1b', '#7f1d1d'][Math.floor(Math.random()*3)];
-    const ringColor = ['#ef4444', '#dc2626', '#f87171'][Math.floor(Math.random()*3)];
-    const darkColor = ['#7f1d1d', '#6b1010', '#5b0f0f'][Math.floor(Math.random()*3)];
-    const blobs = [];
-    blobs.push(`radial-gradient(circle at 50% 50%, ${coreColor} 0 ${30 + Math.floor(Math.random()*10)}%, ${darkColor} ${55 + Math.floor(Math.random()*10)}%, transparent ${56 + Math.floor(Math.random()*8)}%)`);
-    const drops = 3 + Math.floor(Math.random()*4);
+    const size = 18 + Math.floor(Math.random() * 18);
+    const cores = ['#b91c1c', '#991b1b', '#7f1d1d'];
+    const rings = ['#ef4444', '#dc2626', '#f87171'];
+    const darks = ['#7f1d1d', '#6b1010', '#5b0f0f'];
+
+    const core = cores[Math.floor(Math.random() * cores.length)];
+    const ring = rings[Math.floor(Math.random() * rings.length)];
+    const dark = darks[Math.floor(Math.random() * darks.length)];
+
+    const backgrounds = [
+      `radial-gradient(circle at 50% 50%, ${core} 0 35%, ${dark} 60%, transparent 65%)`
+    ];
+
+    const drops = 3 + Math.floor(Math.random() * 4);
+
     for (let i = 0; i < drops; i++) {
-      const cx = Math.floor(Math.random()*90)+5;
-      const cy = Math.floor(Math.random()*90)+5;
-      const r0 = 8 + Math.floor(Math.random()*14);
-      const color = Math.random() < 0.5 ? ringColor : coreColor;
-      blobs.push(`radial-gradient(circle at ${cx}% ${cy}%, ${color} 0 ${r0/2}%, transparent ${(r0/2)+1}%)`);
+      const x = 5 + Math.floor(Math.random() * 90);
+      const y = 5 + Math.floor(Math.random() * 90);
+      const radius = 4 + Math.floor(Math.random() * 7);
+      const color = Math.random() < 0.5 ? ring : core;
+
+      backgrounds.push(
+        `radial-gradient(circle at ${x}% ${y}%, ${color} 0 ${radius}%, transparent ${radius + 1}%)`
+      );
     }
-    return { size: base, background: blobs.join(', ') };
+
+    return { size, background: backgrounds.join(', ') };
   }
 
-  function pickDuration() {
-    const minD = cssVar('--fly-min-duration', 900);
-    const maxD = cssVar('--fly-max-duration', 1800);
-    return Math.floor(minD + Math.random() * (maxD - minD));
+  const swatterCursor = document.createElement('div');
+  swatterCursor.className = 'swatter-cursor';
+  swatterCursor.setAttribute('aria-hidden', 'true');
+  swatterCursor.innerHTML = `
+    <svg viewBox="0 0 230 230" aria-hidden="true">
+      <defs>
+        <linearGradient id="swatter-red-frame" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ff7777"/>
+          <stop offset=".45" stop-color="#e52332"/>
+          <stop offset="1" stop-color="#a80d1a"/>
+        </linearGradient>
+
+        <linearGradient id="swatter-red-handle" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ff777b"/>
+          <stop offset=".5" stop-color="#e51c2b"/>
+          <stop offset="1" stop-color="#a90e1a"/>
+        </linearGradient>
+
+        <pattern id="swatter-red-mesh"
+          width="9" height="9"
+          patternUnits="userSpaceOnUse">
+          <path d="M0 0H9M0 0V9"
+            fill="none"
+            stroke="#d91e2d"
+            stroke-width="2.2"/>
+        </pattern>
+
+        <clipPath id="swatter-hand-clip">
+          <path d="
+            M39 111
+            C24 104 22 91 34 81
+            C23 72 25 59 39 52
+            C31 39 39 27 52 29
+            C53 15 68 10 79 24
+            C86 9 101 10 108 26
+            C117 12 133 15 137 32
+            C151 31 160 43 155 58
+            C170 64 174 79 164 91
+            C177 104 173 119 160 127
+            C166 143 155 157 140 155
+            C129 172 109 175 96 161
+            C79 173 60 165 59 149
+            C42 153 30 141 37 127
+            C28 122 29 115 39 111
+            Z"/>
+        </clipPath>
+      </defs>
+
+      <!-- Langer, leicht gerundeter Kunststoffstiel -->
+      <path d="M145 145L226 226"
+        fill="none"
+        stroke="#a80d1a"
+        stroke-width="19"
+        stroke-linecap="round"/>
+
+      <path d="M145 143L224 222"
+        fill="none"
+        stroke="url(#swatter-red-handle)"
+        stroke-width="14"
+        stroke-linecap="round"/>
+
+      <path d="M151 145L218 212"
+        fill="none"
+        stroke="#ff9a9e"
+        stroke-opacity=".7"
+        stroke-width="2"
+        stroke-linecap="round"/>
+
+      <!-- Handförmiger Kopf: Raster ohne gefüllten Hintergrund -->
+      <path d="
+        M39 111
+        C24 104 22 91 34 81
+        C23 72 25 59 39 52
+        C31 39 39 27 52 29
+        C53 15 68 10 79 24
+        C86 9 101 10 108 26
+        C117 12 133 15 137 32
+        C151 31 160 43 155 58
+        C170 64 174 79 164 91
+        C177 104 173 119 160 127
+        C166 143 155 157 140 155
+        C129 172 109 175 96 161
+        C79 173 60 165 59 149
+        C42 153 30 141 37 127
+        C28 122 29 115 39 111
+        Z"
+        transform="translate(2 3)"
+        fill="#8f101a"
+        opacity=".28"/>
+
+      <path d="
+        M39 111
+        C24 104 22 91 34 81
+        C23 72 25 59 39 52
+        C31 39 39 27 52 29
+        C53 15 68 10 79 24
+        C86 9 101 10 108 26
+        C117 12 133 15 137 32
+        C151 31 160 43 155 58
+        C170 64 174 79 164 91
+        C177 104 173 119 160 127
+        C166 143 155 157 140 155
+        C129 172 109 175 96 161
+        C79 173 60 165 59 149
+        C42 153 30 141 37 127
+        C28 122 29 115 39 111
+        Z"
+        fill="url(#swatter-red-mesh)"
+        clip-path="url(#swatter-hand-clip)"/>
+
+      <!-- Erhabener roter Rand -->
+      <path d="
+        M39 111
+        C24 104 22 91 34 81
+        C23 72 25 59 39 52
+        C31 39 39 27 52 29
+        C53 15 68 10 79 24
+        C86 9 101 10 108 26
+        C117 12 133 15 137 32
+        C151 31 160 43 155 58
+        C170 64 174 79 164 91
+        C177 104 173 119 160 127
+        C166 143 155 157 140 155
+        C129 172 109 175 96 161
+        C79 173 60 165 59 149
+        C42 153 30 141 37 127
+        C28 122 29 115 39 111
+        Z"
+        fill="none"
+        stroke="url(#swatter-red-frame)"
+        stroke-width="5"
+        stroke-linejoin="round"/>
+
+      <!-- Dezente Lichtkanten für glänzenden Kunststoff -->
+      <path d="M43 51C40 42 46 34 54 34M83 25C89 18 99 19 103 27"
+        fill="none"
+        stroke="#ffb0b3"
+        stroke-opacity=".8"
+        stroke-width="2"
+        stroke-linecap="round"/>
+    </svg>`;
+
+
+
+  document.body.appendChild(swatterCursor);
+
+  function setCatchMode(enabled) {
+    catchMode = enabled;
+    document.body.classList.toggle('catch-mode', enabled);
+    btn.setAttribute('aria-pressed', String(enabled));
   }
 
-  // Flug-Keyframes (Jitter mild; bei Bedarf auf 1.0 setzen)
-  function buildChaoticKeyframes(from, to, duration, scaleMul = 1) {
-    const segments = 3 + Math.floor(Math.random() * 3);
-    const pts = [from];
-    for (let i = 0; i < segments - 1; i++) pts.push(randomViewportPos(8));
-    pts.push(to);
-
-    const kf = [];
-    let prev = pts[0];
-    for (let s = 1; s < pts.length; s++) {
-      const next = pts[s];
-      const dx = next.x - prev.x, dy = next.y - prev.y;
-      const dist = Math.hypot(dx, dy);
-      const ang = Math.atan2(dy, dx);
-      const amp = Math.max(30, dist * (0.5 + Math.random() * 0.9));
-      const c1 = { x: prev.x + Math.cos(ang + Math.PI/2)*(amp*(0.4+Math.random()*0.6)),
-                   y: prev.y + Math.sin(ang + Math.PI/2)*(amp*(0.4+Math.random()*0.6)) };
-      const c2 = { x: next.x + Math.cos(ang - Math.PI/2)*(amp*(0.4+Math.random()*0.6)),
-                   y: next.y + Math.sin(ang - Math.PI/2)*(amp*(0.4+Math.random()*0.6)) };
-      const samples = 12;
-
-      for (let i = 1; i <= samples; i++) {
-        const t = i / samples;
-        const x = (1 - t)**3 * prev.x + 3 * (1 - t)**2 * t * c1.x + 3 * (1 - t) * t**2 * c2.x + t**3 * next.x;
-        const y = (1 - t)**3 * prev.y + 3 * (1 - t)**2 * t * c1.y + 3 * (1 - t) * t**2 * c2.y + t**3 * next.y;
-
-        const t2 = Math.min(1, t + 0.04);
-        const x2 = (1 - t2)**3 * prev.x + 3 * (1 - t2)**2 * t2 * c1.x + 3 * (1 - t2) * t2**2 * c2.x + t2**3 * next.x;
-        const y2 = (1 - t2)**3 * prev.y + 3 * (1 - t2)**2 * t2 * c1.y + 3 * (1 - t2) * t2**2 * c2.y + t2**3 * next.y;
-
-        const ang2 = Math.atan2(y2 - y, x2 - x);
-        const jitter = 0.99 + Math.random() * 0.02;
-
-        kf.push({ transform: `translate(${x}px, ${y}px) rotate(${ang2}rad) scale(${SIT_SCALE * scaleMul * jitter})` });
-      }
-      prev = next;
-    }
-
-    return { keyframes: kf, options: { duration, easing: 'linear', iterations: 1, fill: 'forwards' } };
+  function playSwatAnimation() {
+    swatterCursor.classList.remove('swatting');
+    void swatterCursor.offsetWidth;
+    swatterCursor.classList.add('swatting');
   }
 
-  // Langer Walk: KEINE Pausen, glatter Pfad, kein End-Sprung
-  function buildChaoticLongWalkKeyframes(startX, startY, baseAngle, durationMs, totalDistPx) {
-    // Segmente 3..4
-    const segments = 3 + Math.floor(Math.random() * 2);
-    const pts = [{ x: startX, y: startY }];
-
-    // 90°-gedrehte Vorwärtsachse
-    let fwdX = -Math.sin(baseAngle);
-    let fwdY =  Math.cos(baseAngle);
-    const orthoX = -fwdY;
-    const orthoY =  fwdX;
-
-    const segLen = totalDistPx / segments;
-
-    // Seitliche Amplitude moderat
-    let sideAmpBase = segLen * (0.18 + Math.random() * 0.24); // 18–42%
-    if (totalDistPx < 120) sideAmpBase *= 0.6;
-    if (totalDistPx < 80)  sideAmpBase *= 0.5;
-
-    let px = startX, py = startY;
-    let sideSign = Math.random() < 0.5 ? -1 : 1;
-    for (let s = 0; s < segments; s++) {
-      const forwardStep = segLen * (0.92 + Math.random() * 0.16);   // 92–108%
-      const sideAmt = sideAmpBase * (0.9 + Math.random() * 0.5); // 90–140%
-      if (Math.random() < 0.3) sideSign *= -1;
-
-      px += fwdX * forwardStep + orthoX * sideAmt * sideSign;
-      py += fwdY * forwardStep + orthoY * sideAmt * sideSign;
-      pts.push({ x: px, y: py });
+  function updateButtonLabel() {
+    if (flies.length === 1) {
+      btn.textContent = 'Catch the fly!';
+      btn.setAttribute('aria-label', 'Catch the fly!');
+      btn.classList.add('state-kill');
+      btn.classList.remove('state-get');
+    } else if (flies.length > 1) {
+      btn.textContent = 'Catch the flies!';
+      btn.setAttribute('aria-label', 'Catch the flies!');
+      btn.classList.add('state-kill');
+      btn.classList.remove('state-get');
+    } else {
+      btn.textContent = 'Get in touch :)';
+      btn.setAttribute('aria-label', 'Get in touch :)');
+      btn.classList.remove('state-kill');
+      btn.classList.add('state-get');
     }
-
-    // Dichteres Sampling
-    const samplesPerSeg = 32;
-    const totalSamples = samplesPerSeg * segments;
-
-    function P(i) { return pts[Math.min(Math.max(i, 0), pts.length - 1)]; }
-    function unwrap(prev, curr) {
-      let d = curr - prev;
-      while (d > Math.PI)  d -= 2 * Math.PI;
-      while (d < -Math.PI) d += 2 * Math.PI;
-      return prev + d;
-    }
-
-    let prevAngle = null;
-    const baseKf = [];
-
-    for (let i = 0; i <= totalSamples; i++) {
-      const tGlobal = i / totalSamples;
-      const segF = tGlobal * (pts.length - 1);
-      const idx = Math.floor(segF);
-      const t = segF - idx;
-
-      // korrekte Catmull-Rom
-      const p0 = P(idx - 1), p1 = P(idx), p2 = P(idx + 1), p3 = P(idx + 2);
-      const t2 = t * t, t3 = t2 * t;
-
-      let x =
-        0.5 * ( (2*p1.x) +
-                (-p0.x + p2.x) * t +
-                (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * t2 +
-                (-p0.x + 3*p1.x - 3*p2.x + p3.x) * t3 );
-
-      let y =
-        0.5 * ( (2*p1.y) +
-                (-p0.y + p2.y) * t +
-                (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * t2 +
-                (-p0.y + 3*p1.y - 3*p2.y + p3.y) * t3 );
-
-      // Tangente
-      const tAhead = Math.min(1, t + 1 / totalSamples);
-      const tA2 = tAhead * tAhead, tA3 = tA2 * tAhead;
-
-      const xA =
-        0.5 * ( (2*p1.x) +
-                (-p0.x + p2.x) * tAhead +
-                (2*p0.x - 5*p1.x + 4*p2.x - p3.x) * tA2 +
-                (-p0.x + 3*p1.x - 3*p2.x + p3.x) * tA3 );
-      const yA =
-        0.5 * ( (2*p1.y) +
-                (-p0.y + p2.y) * tAhead +
-                (2*p0.y - 5*p1.y + 4*p2.y - p3.y) * tA2 +
-                (-p0.y + 3*p1.y - 3*p2.y + p3.y) * tA3 );
-
-      const tangentialAngle = Math.atan2(yA - y, xA - x);
-      const angle = tangentialAngle + Math.PI / 2;
-
-      // Winkel glätten
-      let angleUnwrapped = angle;
-      if (prevAngle != null) {
-        angleUnwrapped = unwrap(prevAngle, angle);
-        const alpha = 0.30;
-        angleUnwrapped = prevAngle + (angleUnwrapped - prevAngle) * alpha;
-      }
-      prevAngle = angleUnwrapped;
-
-      // Positionsglättung
-      if (baseKf.length) {
-        const pxPrev = baseKf[baseKf.length - 1]._x;
-        const pyPrev = baseKf[baseKf.length - 1]._y;
-        const beta = 0.45;
-        x = pxPrev + (x - pxPrev) * beta;
-        y = pyPrev + (y - pyPrev) * beta;
-      }
-
-      baseKf.push({
-        transform: `translate(${x}px, ${y}px) rotate(${angleUnwrapped}rad) scale(${SIT_SCALE})`,
-        _x: x, _y: y, _angle: angleUnwrapped, _scale: SIT_SCALE,
-        offset: tGlobal
-      });
-    }
-
-    // Keine Pausen im LongWalk!
-    // Letzten Bewegungsframe exakt auf offset 1.0 setzen
-    if (baseKf.length && baseKf[baseKf.length - 1].offset !== 1) {
-      const last = baseKf[baseKf.length - 1];
-      baseKf[baseKf.length - 1] = { ...last, offset: 1.0 };
-    }
-
-    // Ausgabe (nur Bewegungsframes)
-    const merged = baseKf.map(({ transform, offset }) => ({ transform, offset }))
-                         .sort((a, b) => (a.offset ?? 0) - (b.offset ?? 0));
-
-    // Safety: keine zwei unterschiedlichen transforms am selben offset
-    for (let i = 1; i < merged.length; i++) {
-      if ((merged[i].offset ?? -1) === (merged[i-1].offset ?? -2) &&
-          merged[i].transform !== merged[i-1].transform) {
-        const delta = 1 / totalSamples;
-        merged[i].offset = Math.min(1.0, (merged[i].offset ?? 0) + delta);
-      }
-    }
-
-    return { keyframes: merged, options: { duration: durationMs, easing: 'linear', iterations: 1, fill: 'forwards' } };
   }
 
-  // Flug-Endpose persistieren, dann landen
-  function startFlight(fromPos) {
-    if (!flyEl) return;
-    isPerching = false;
-    // Im Flug keinerlei Sitz-/Laufanimationen
-    flyEl.classList.remove('perching');
-    flyEl.classList.remove('walking');
+  function getTransformPosition(el) {
+    const transform = getComputedStyle(el).transform;
 
-    const from = fromPos || currentFlyPos();
-    const to = randomViewportPos(8);
-    const duration = pickDuration();
+    if (!transform || transform === 'none') {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left, y: rect.top, angle: 0 };
+    }
 
-    if (currentAnim) currentAnim.cancel();
-    const { keyframes, options } = buildChaoticKeyframes(from, to, duration, FLIGHT_SCALE);
-    currentAnim = flyEl.animate(keyframes, options);
+    const is3d = transform.startsWith('matrix3d');
+    const values = transform
+      .slice(is3d ? 9 : 7, -1)
+      .split(',')
+      .map(Number);
 
-    currentAnim.onfinish = () => {
-      try { currentAnim.commitStyles?.(); } catch {}
-      currentAnim.cancel();
-
-      const { x, y } = getElementTranslate(flyEl);
-      const { angle } = getElementAngleScale(flyEl);
-
-      flyEl.style.transform = `translate(${x}px, ${y}px) rotate(${angle}rad) scale(${FLIGHT_SCALE})`;
-      lastFlightAngle = angle;
-
-      startPerch();
+    return {
+      x: is3d ? values[12] : values[4],
+      y: is3d ? values[13] : values[5],
+      angle: Math.atan2(values[1], values[0])
     };
   }
 
-  // Landen + optional laufen
-  function startPerch() {
-    if (!flyEl) return;
-    isPerching = true;
+  function makeFlightKeyframes(from, to) {
+    const points = [from];
 
-    // Winkel der Endpose + Jitter
-    let { angle } = getElementAngleScale(flyEl);
-    if (!isFinite(angle)) angle = lastFlightAngle || 0;
-    const jitter = (Math.random() * 24 - 12) * (Math.PI / 180); // ±12°
-    const landAngle = angle + jitter;
-
-    // Position aus Matrix
-    const { x, y } = getElementTranslate(flyEl);
-
-    // Sitzpose – ab hier dürfen Vorder-/Mittel-/Hinterbeine (per CSS) wackeln
-    flyEl.style.transform = `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`;
-    flyEl.classList.add('perching');
-    flyEl.classList.remove('walking');
-
-    // Entscheidung: Short-Walk etwa jedes 2..4te Mal
-    if (typeof window._walkCountdown !== 'number') window._walkCountdown = 2 + Math.floor(Math.random() * 3);
-    window._walkCountdown--;
-    const willWalkShort = window._walkCountdown <= 0;
-    if (willWalkShort) window._walkCountdown = 2 + Math.floor(Math.random() * 3);
-
-    // Langer Spaziergang alle 3..5 Landungen
-    if (typeof window.longWalkCountdown !== 'number') window.longWalkCountdown = 3 + Math.floor(Math.random() * 3);
-    window.longWalkCountdown--;
-    const willWalkLong = window.longWalkCountdown <= 0;
-    if (willWalkLong) window.longWalkCountdown = 3 + Math.floor(Math.random() * 3);
-
-    // Sicherheitsmaßnahmen
-    try { currentAnim?.cancel(); } catch {}
-    if (perchTimer) { clearTimeout(perchTimer); perchTimer = null; }
-
-    // LONG-WALK: KEINE PAUSEN, keine Sprünge, Flügel bleiben gefaltet, Beine aus
-    if (willWalkLong) {
-      const longDur = 5000 + Math.floor(Math.random() * 5001); // 5000..10000 ms
-      const totalDist = 80 + Math.random() * 140;              // ~80..220 px
-
-      let { keyframes, options } = buildChaoticLongWalkKeyframes(x, y, landAngle, longDur, totalDist);
-
-      // Exakter Startframe auf offset 0
-      const startKF = { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`, offset: 0 };
-      if (!(keyframes.length && keyframes[0].offset === 0)) {
-        keyframes = [startKF, ...keyframes].sort((a,b)=> (a.offset??0)-(b.offset??0));
-      } else {
-        keyframes[0] = startKF;
-      }
-
-      // Während des Laufens: Beine aus, Flügel bleiben gefaltet (perching bleibt), walking an
-      flyEl.classList.add('perching');
-      flyEl.classList.add('walking');
-      flyEl.style.transform = startKF.transform;
-
-      currentAnim = flyEl.animate(keyframes, options);
-
-      currentAnim.onfinish = () => {
-        try { currentAnim.commitStyles?.(); } catch {}
-
-        let lastKF = null;
-        try { lastKF = currentAnim.effect?.getKeyframes?.().slice(-1)[0] || null; } catch {}
-        if (lastKF?.transform) {
-          flyEl.style.transform = lastKF.transform;
-        } else {
-          const { x: nx, y: ny } = getElementTranslate(flyEl);
-          const { angle: na } = getElementAngleScale(flyEl);
-          flyEl.style.transform = `translate(${nx}px, ${ny}px) rotate(${na}rad) scale(${SIT_SCALE})`;
-        }
-
-        try { currentAnim.cancel(); } catch {}
-
-        // Nach dem Long-Walk: Sitzen bleibt, Beine wieder aktiv
-        flyEl.classList.remove('walking');
-
-        const perchMs = cssVar('--perch-time', 5000);
-        perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
-      };
-
-    } else if (willWalkShort) {
-      // Kurzlauf: perching bleibt (Flügel gefaltet), Beine aus via walking
-      window._walkCountdown = 2 + Math.floor(Math.random() * 3);
-      const cs = getComputedStyle(document.documentElement);
-      const minDist = parseFloat(cs.getPropertyValue('--fly-walk-min')) || 24;
-      const maxDist = parseFloat(cs.getPropertyValue('--fly-walk-max')) || 44;
-      const dist = minDist + Math.random() * (maxDist - minDist);
-
-      const minDur = parseInt(cs.getPropertyValue('--fly-walk-dur-min')) || 1400;
-      const maxDur = parseInt(cs.getPropertyValue('--fly-walk-dur-max')) || 2000;
-      const duration = Math.floor(minDur + Math.random() * (maxDur - minDur));
-
-      flyEl.classList.add('perching');
-      flyEl.classList.add('walking');
-
-      const dirX = Math.cos(landAngle);
-      const dirY = Math.sin(landAngle);
-
-      let fwdX = -dirY;
-      let fwdY =  dirX;
-
-      if (preferUp && fwdY > 0) { fwdX = -fwdX; fwdY = -fwdY; }
-
-      const orthoX = -fwdY;
-      const orthoY =  fwdX;
-
-      const sideSign = Math.random() < 0.5 ? -1 : 1;
-      const sideAmp = dist * (0.08 + Math.random() * 0.06);
-
-      const endDx = fwdX * dist;
-      const endDy = fwdY * dist;
-
-      const midDx = fwdX * (dist * 0.5) + orthoX * (sideAmp * sideSign);
-      const midDy = fwdY * (dist * 0.5) + orthoY * (sideAmp * sideSign);
-
-      const rotAmp = 0.020 * sideSign; // ~1.15°
-      const kf = [
-        { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
-        { transform: `translate(${x + midDx}px, ${y + midDy}px) rotate(${landAngle + rotAmp}rad) scale(${SIT_SCALE})` },
-        { transform: `translate(${x + endDx}px, ${y + endDy}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
-      ];
-
-      currentAnim = flyEl.animate(kf, { duration, easing: 'ease-in-out', fill: 'forwards' });
-
-      currentAnim.onfinish = () => {
-        try { currentAnim.commitStyles?.(); } catch {}
-        currentAnim.cancel();
-
-        // Wieder Sitzen, Beine wieder aktiv
-        flyEl.classList.remove('walking');
-
-        const perchMs = cssVar('--perch-time', 5000);
-        perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
-      };
-
-    } else {
-      // Kein Walk → normalen perchTimer setzen
-      const perchMs = cssVar('--perch-time', 5000);
-      perchTimer = setTimeout(() => { if (flyEl) startFlight(currentFlyPos()); }, perchMs);
-    }
-  }
-
-  function explodeFly() {
-    if (!flyEl) return;
-    const rect = flyEl.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-
-    if (perchTimer) clearTimeout(perchTimer);
-    if (currentAnim) currentAnim.cancel();
-
-    flyEl.remove();
-    flyEl = null;
-
-    // Partikel
-    const particles = 10 + Math.floor(Math.random() * 8);
-    for (let i = 0; i < particles; i++) {
-      const p = document.createElement('div');
-      p.className = 'particle';
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 30 + Math.random() * 70;
-      p.style.left = `${cx}px`;
-      p.style.top = `${cy}px`;
-      p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
-      p.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
-      document.body.appendChild(p);
-      p.addEventListener('animationend', () => p.remove(), { once: true });
+    for (let i = 0; i < 3; i++) {
+      points.push(randomViewportPos(8));
     }
 
-    // variabler Blutfleck
-    const splat = document.createElement('div');
-    splat.className = 'splat';
-    const { size, background } = randomSplatStyle();
-    splat.style.left = `${cx}px`;
-    splat.style.top = `${cy}px`;
-    splat.style.width = `${size}px`;
-    splat.style.height = `${size}px`;
-    splat.style.backgroundImage = background;
-    splat.style.transform = `translate(-50%, -50%) rotate(${(Math.random() * 80 - 40)}deg)`;
-    document.body.appendChild(splat);
+    points.push(to);
 
-    setTimeout(() => {
-      splat.style.opacity = '0';
-      setTimeout(() => splat.remove(), 420);
-    }, 5000);
+    const totalSegments = points.length - 1;
+    const frames = [];
 
-    isPerching = false;
-    setButtonState(false);
+    for (let i = 0; i < totalSegments; i++) {
+      const start = points[i];
+      const end = points[i + 1];
+      const angle = Math.atan2(end.y - start.y, end.x - start.x);
+
+      frames.push({
+        transform:
+          `translate(${start.x}px, ${start.y}px) ` +
+          `rotate(${angle}rad) scale(${FLIGHT_SCALE})`,
+        offset: i / totalSegments
+      });
+    }
+
+    const last = points[points.length - 1];
+    const previous = points[points.length - 2];
+    const lastAngle = Math.atan2(last.y - previous.y, last.x - previous.x);
+
+    frames.push({
+      transform:
+        `translate(${last.x}px, ${last.y}px) ` +
+        `rotate(${lastAngle}rad) scale(${FLIGHT_SCALE})`,
+      offset: 1
+    });
+
+    return frames;
   }
 
-  function explodeOneFly(el) {
-  // Laufende Web-Animations und CSS-Animations stoppen
-    try { el.getAnimations().forEach(a => a.cancel()); } catch {}
-
-    // Position ermitteln
+  function createExplosion(el) {
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width / 2;
     const cy = rect.top + rect.height / 2;
+    const particleCount = 10 + Math.floor(Math.random() * 8);
 
-    // Partikel
-    const particles = 10 + Math.floor(Math.random() * 8);
-    for (let i = 0; i < particles; i++) {
-      const p = document.createElement('div');
-      p.className = 'particle';
+    for (let i = 0; i < particleCount; i++) {
+      const particle = document.createElement('div');
+      particle.className = 'particle';
+
       const angle = Math.random() * Math.PI * 2;
-      const dist = 30 + Math.random() * 70;
-      p.style.left = `${cx}px`;
-      p.style.top = `${cy}px`;
-      p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
-      p.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
-      document.body.appendChild(p);
-      p.addEventListener('animationend', () => p.remove(), { once: true });
+      const distance = 30 + Math.random() * 70;
+
+      particle.style.left = `${cx}px`;
+      particle.style.top = `${cy}px`;
+      particle.style.setProperty('--dx', `${Math.cos(angle) * distance}px`);
+      particle.style.setProperty('--dy', `${Math.sin(angle) * distance}px`);
+
+      document.body.appendChild(particle);
+      particle.addEventListener(
+        'animationend',
+        () => particle.remove(),
+        { once: true }
+      );
     }
 
-    // Splat
     const splat = document.createElement('div');
     splat.className = 'splat';
-    const { size, background } = randomSplatStyle();
+
+    const style = randomSplatStyle();
     splat.style.left = `${cx}px`;
     splat.style.top = `${cy}px`;
-    splat.style.width = `${size}px`;
-    splat.style.height = `${size}px`;
-    splat.style.backgroundImage = background;
-    splat.style.transform = `translate(-50%, -50%) rotate(${(Math.random() * 80 - 40)}deg)`;
+    splat.style.width = `${style.size}px`;
+    splat.style.height = `${style.size}px`;
+    splat.style.backgroundImage = style.background;
+    splat.style.transform =
+      `translate(-50%, -50%) rotate(${Math.random() * 80 - 40}deg)`;
+
     document.body.appendChild(splat);
 
     setTimeout(() => {
       splat.style.opacity = '0';
       setTimeout(() => splat.remove(), 420);
     }, 5000);
-
-    // DOM entfernen
-    el.remove();
-
-    // Aus der Liste austragen
-    const i = flies.indexOf(el);
-    if (i >= 0) flies.splice(i, 1);
-    updateButtonLabel();
   }
 
+  function beginCooldown() {
+    if (roundState === 'cooldown') return;
 
-  window.addEventListener('mousemove', (e) => {
-    mousePos = { x: e.clientX, y: e.clientY };
-    if (!flyEl || !isAlive || !isPerching) return;
-    const rect = flyEl.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-    const scareR = cssVar('--scare-radius', 90);
-    if (Math.hypot(cx - mousePos.x, cy - mousePos.y) <= scareR) {
-      if (perchTimer) { clearTimeout(perchTimer); perchTimer = null; }
-      startFlight({ x: rect.left, y: rect.top, cx, cy });
+    roundState = 'cooldown';
+    setCatchMode(false);
+    updateButtonLabel();
+
+    if (cooldownTimer) clearTimeout(cooldownTimer);
+
+    cooldownTimer = setTimeout(() => {
+      roundState = 'ready';
+      cooldownTimer = null;
+      // Button bleibt auf „Get in touch“.
+      // Der nächste Seitenklick startet eine neue Runde.
+    }, COOLDOWN_MS);
+  }
+
+  function createFly() {
+    if (roundState === 'cooldown') return null;
+
+    if (flies.length === 0) {
+      lastCaughtCount = 0;
+      roundState = 'playing';
     }
-  }, { passive: true });
+
+    const el = document.createElement('div');
+    el.className = 'fly';
+
+    const start = randomViewportPos();
+    el.style.transform =
+      `translate(${start.x}px, ${start.y}px) rotate(0rad) scale(${SIT_SCALE})`;
+    el.appendChild(createFlySVG());
+    document.body.appendChild(el);
+
+    flies.push(el);
+
+    let animation = null;
+    let perchTimer = null;
+    let perching = false;
+    let stopped = false;
+
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+
+      if (perchTimer) {
+        clearTimeout(perchTimer);
+        perchTimer = null;
+      }
+
+      try {
+        animation?.cancel();
+      } catch {}
+
+      window.removeEventListener('pointermove', onPointerMove);
+    }
+
+    flyCleanup.set(el, stop);
+
+    function startFlight() {
+      if (stopped || !el.isConnected) return;
+
+      perching = false;
+      el.classList.remove('perching', 'walking');
+
+      if (perchTimer) {
+        clearTimeout(perchTimer);
+        perchTimer = null;
+      }
+
+      try {
+        animation?.cancel();
+      } catch {}
+
+      const rect = el.getBoundingClientRect();
+      const from = { x: rect.left, y: rect.top };
+      const to = randomViewportPos(8);
+
+      const minDuration = cssVar('--fly-min-duration', 900);
+      const maxDuration = cssVar('--fly-max-duration', 1800);
+      const duration = Math.floor(
+        minDuration +
+        Math.random() * Math.max(0, maxDuration - minDuration)
+      );
+
+      animation = el.animate(makeFlightKeyframes(from, to), {
+        duration,
+        easing: 'linear',
+        fill: 'forwards'
+      });
+
+      animation.onfinish = () => {
+        if (stopped) return;
+
+        try {
+          animation.commitStyles();
+        } catch {}
+
+        try {
+          animation.cancel();
+        } catch {}
+
+        const position = getTransformPosition(el);
+        const jitter = (Math.random() * 24 - 12) * Math.PI / 180;
+
+        el.style.transform =
+          `translate(${position.x}px, ${position.y}px) ` +
+          `rotate(${position.angle + jitter}rad) scale(${SIT_SCALE})`;
+
+        startPerch();
+      };
+    }
+
+    function startPerch() {
+      if (stopped || !el.isConnected) return;
+
+      perching = true;
+      el.classList.add('perching');
+      el.classList.remove('walking');
+
+      perchTimer = setTimeout(
+        startFlight,
+        cssVar('--perch-time', 5000)
+      );
+    }
+
+    function onPointerMove(event) {
+      if (!perching || stopped || !el.isConnected) return;
+
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const radius = cssVar('--scare-radius', 90);
+
+      if (Math.hypot(cx - event.clientX, cy - event.clientY) <= radius) {
+        startFlight();
+      }
+    }
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+
+    startFlight();
+    updateButtonLabel();
+
+    return el;
+  }
+
+  function catchFly(el) {
+    if (!flies.includes(el) || caughtFlies.has(el)) return;
+
+    caughtFlies.add(el);
+    flyCleanup.get(el)?.();
+
+    const index = flies.indexOf(el);
+    if (index !== -1) flies.splice(index, 1);
+
+    if (el === flyEl) flyEl = null;
+
+    lastCaughtCount++;
+    updateButtonLabel();
+
+    setTimeout(() => {
+      if (!el.isConnected) return;
+      createExplosion(el);
+      el.remove();
+    }, 110);
+
+    if (flies.length === 0) {
+      beginCooldown();
+    }
+  }
+
+  function catchFliesAt(x, y) {
+    const cursorRect = swatterCursor.getBoundingClientRect();
+
+    // Netzfläche: 168 von 230 SVG-Einheiten breit.
+    const halfSurface = cursorRect.width * (168 / 230) / 2;
+
+    const hits = flies.filter(el => {
+      if (caughtFlies.has(el)) return false;
+
+      const rect = el.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+
+      const overlapsNet =
+        rect.right >= x - halfSurface &&
+        rect.left <= x + halfSurface &&
+        rect.bottom >= y - halfSurface &&
+        rect.top <= y + halfSurface;
+
+      const withinRadius =
+        Math.hypot(centerX - x, centerY - y) <= 50;
+
+      return overlapsNet || withinRadius;
+    });
+
+    if (hits.length === 0) return;
+
+    playSwatAnimation();
+    hits.forEach(catchFly);
+  }
 
   function explodeAllFlies() {
-  // Kopie erstellen, weil explodeOneFly die Liste verändert
-    const snapshot = Array.from(flies);
+    const snapshot = [...flies];
+
+    lastCaughtCount += snapshot.length;
+
     for (const el of snapshot) {
-      explodeOneFly(el);
+      flyCleanup.get(el)?.();
+      createExplosion(el);
+      el.remove();
+
+      const index = flies.indexOf(el);
+      if (index !== -1) flies.splice(index, 1);
+
+      if (el === flyEl) flyEl = null;
     }
-    // Button-Status zurücksetzen und Haupt-Referenz leeren (falls genutzt)
-    setButtonState(false);
-    if (typeof flyEl !== 'undefined') flyEl = null;
+
+    updateButtonLabel();
+    beginCooldown();
   }
 
   function caughtText(count) {
     if (count === 1) return 'I caught a fly!';
-    return `I caught ${count} flies!`;
+    if (count > 1) return `I caught ${count} flies!`;
+    return 'I would like to get in touch.';
   }
 
-  function caughtSubject(count) {
-    if (count === 1) return 'I caught a fly';
-    return `I caught ${count} flies!`;
+  function openEmail() {
+    const count = lastCaughtCount;
+    const subject = count === 1
+      ? 'I caught a fly'
+      : count > 1
+        ? `I caught ${count} flies`
+        : 'Get in touch';
+
+    const body = encodeURIComponent(
+      `${EMAIL_GREETING}\n\n${caughtText(count)}\n`
+    );
+
+    window.location.href =
+      `mailto:${MAIL_TO}?subject=${encodeURIComponent(subject)}&body=${body}`;
   }
 
+  window.addEventListener('pointermove', event => {
+    swatterCursor.style.left = `${event.clientX}px`;
+    swatterCursor.style.top = `${event.clientY}px`;
+  }, { passive: true });
 
-  btn.addEventListener('click', (e) => {
-    e.preventDefault();
-    if (isAlive) {
-      // Anzahl VOR dem Explodieren sichern
-      lastCaughtCount = (Array.isArray(flies) ? flies.length : (flyEl ? 1 : 0));
-      explodeAllFlies(); // leert flies
+  // Klick im Fangmodus: Netzfläche oder 50-Pixel-Radius prüfen.
+  document.addEventListener('click', event => {
+    if (!catchMode) return;
+
+    const target = event.target instanceof Element
+      ? event.target
+      : event.target?.parentElement;
+
+    if (target?.closest('#flyToggle')) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    catchFliesAt(event.clientX, event.clientY);
+  }, true);
+
+  btn.addEventListener('click', event => {
+    event.preventDefault();
+
+    if (flies.length > 0) {
+      setCatchMode(!catchMode);
     } else {
-      // Wenn keine aktiven Fliegen da sind, nimm den letzten Fang-Zähler
-      const activeCount = Array.isArray(flies) ? flies.length : (flyEl ? 1 : 0);
-      const count = activeCount > 0 ? activeCount : lastCaughtCount;
-
-      const subject = encodeURIComponent(caughtSubject(count));
-      const greeting = 'Hello Christoph,';
-      const line = caughtText(count);
-      const body = encodeURIComponent(`${greeting}\n\n${line}\n`);
-      window.location.href = `mailto:${MAIL_TO}?subject=${subject}&body=${body}`;
-
-      // Optional: danach wieder eine Fliege spawnen
-      spawnFly();
+      openEmail();
     }
   });
 
+  window.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || roundState !== 'playing') return;
 
+    explodeAllFlies();
+  });
 
+  // Seitenklicks erzeugen nur außerhalb der 30-Sekunden-Pause Fliegen.
+  document.addEventListener('click', event => {
+    const target = event.target instanceof Element
+      ? event.target
+      : event.target?.parentElement;
 
+    if (!target || roundState === 'cooldown') return;
 
-  // Globaler Klick: überall auf die Seite klicken → neue Fliege spawnen
-  document.addEventListener('click', (e) => {
-    const t = e.target;
+    const interactiveSelector =
+      'a, button, [role="button"], input, textarea, select, label, summary, details, ' +
+      '[contenteditable=""], [contenteditable="true"], .fly';
 
-    // Interaktive Elemente ignorieren
-    const interactiveSel = 'a, button, [role="button"], input, textarea, select, label, summary, details, [contenteditable=""], [contenteditable="true"]';
-    if (t.closest(interactiveSel)) return;
+    if (target.closest(interactiveSelector)) return;
 
-    // Auch Elemente mit expliziten Klickhandlern optional ignorieren
-    // if (t.closest('[onclick]')) return;
+    createFly();
+  });
 
-    // HUD/Controls-Bereich optional ausnehmen:
-    // if (t.closest('.controls')) return;
-
-    // Neue Fliege spawnen
-    spawnExtraFly();
-    setButtonState(true);
-  }, { passive: true });
-
-
-
-
-
-  function setButtonState(alive) {
-    isAlive = alive;
-    btn.classList.toggle('state-kill', alive);
-    btn.classList.toggle('state-get', !alive);
-    btn.setAttribute('aria-pressed', String(alive));
-    // Text steuert jetzt updateButtonLabel()
-  }
-
-
-  function updateButtonLabel() {
-    const count = flies.length;
-    // Alive-Status ggf. synchronisieren (optional)
-    setButtonState(count > 0);
-
-    // Text: 1 → “Catch the fly!”, >1 → “Catch the flies!”
-    if (count === 1) {
-      btn.textContent = 'Catch the fly!';
-      btn.setAttribute('aria-label', 'Catch the fly!');
-    } else if (count > 1) {
-      btn.textContent = 'Catch the flies!';
-      btn.setAttribute('aria-label', 'Catch the flies!');
-    } else {
-      // 0 Fliegen: “Get in touch :)” (so wie bisher)
-      btn.textContent = 'Get in touch :)';
-      btn.setAttribute('aria-label', 'Get in touch :)');
-    }
-  }
-
-
-
-  function spawnFly() {
-    if (flyEl) return;
-    flyEl = document.createElement('div');
-    flyEl.className = 'fly';
-    const start = randomViewportPos();
-    flyEl.style.transform = `translate(${start.x}px, ${start.y}px) rotate(0rad) scale(${SIT_SCALE})`;
-
-    flyEl.appendChild(createFlySVG());
-    document.body.appendChild(flyEl);
-    flies.push(flyEl); // registrieren
-    updateButtonLabel();
-    setButtonState(true);
-    startFlight(start);
-  }
-
- // Zusatz-Spawn: eigenständige Fliege ohne Button-Steuerung
-  function spawnExtraFly() {
-    const el = document.createElement('div');
-    el.className = 'fly';
-
-    // Lokaler Zustand für diese Fliege
-    let anim = null;
-    let perchTimer = null;
-    let lastAngle = 0;
-    let isPerchingLocal = false;
-
-    function isPointNearMe(x, y) {
-      const rect = el.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-      const scareR = cssVar('--scare-radius', 90);
-      return Math.hypot(cx - x, cy - y) <= scareR ? rect : null;
-    }
-
-    const onMove = (e) => {
-      if (!isPerchingLocal) return;
-      const rect = isPointNearMe(e.clientX, e.clientY);
-      if (!rect) return;
-      if (perchTimer) { clearTimeout(perchTimer); perchTimer = null; }
-      // Sofort wieder in den Flugzyklus
-      flyCycle();
-    };
-    window.addEventListener('mousemove', onMove, { passive: true });
-
-    function cleanup() {
-      window.removeEventListener('mousemove', onMove);
-      try { anim?.cancel(); } catch {}
-      if (perchTimer) clearTimeout(perchTimer);
-      explodeOneFly(el)
-      updateButtonLabel();
-    }
-
-    // Start im DOM
-    const start = randomViewportPos();
-    el.style.transform = `translate(${start.x}px, ${start.y}px) rotate(0rad) scale(${SIT_SCALE})`;
-    el.appendChild(createFlySVG());
-    document.body.appendChild(el);
-    flies.push(el); // registrieren
-    updateButtonLabel();
-
-    function endTransformFrom(elm) {
-      const tr = getComputedStyle(elm).transform;
-      if (!tr || tr === 'none') return { x: 0, y: 0, angle: 0 };
-      const m = tr.startsWith('matrix3d') ? tr.slice(9, -1).split(',').map(parseFloat)
-                                          : tr.slice(7, -1).split(',').map(parseFloat);
-      const x = tr.startsWith('matrix3d') ? m[12] : m[4];
-      const y = tr.startsWith('matrix3d') ? m[13] : m[5];
-      const a = Math.atan2(m[1], m[0]);
-      return { x, y, angle: a };
-    }
-
-    function flyCycle() {
-      isPerchingLocal = false;                 // nicht sitzend → darf erschrecken ignorieren
-      el.classList.remove('perching');
-      el.classList.remove('walking');
-
-      const to = randomViewportPos(8);
-      const duration = pickDuration();
-
-      // Aktuelle Startposition lesen und dann animieren
-      const rect = el.getBoundingClientRect();
-      const from = { x: rect.left, y: rect.top };
-
-      try { anim?.cancel(); } catch {}
-      const { keyframes, options } = buildChaoticKeyframes(from, to, duration, FLIGHT_SCALE);
-      anim = el.animate(keyframes, options);
-
-      anim.onfinish = () => {
-        try { anim.commitStyles?.(); } catch {}
-        anim.cancel();
-        const { x, y, angle } = endTransformFrom(el);
-        el.style.transform = `translate(${x}px, ${y}px) rotate(${angle}rad) scale(${FLIGHT_SCALE})`;
-        lastAngle = angle;
-        perch();
-      };
-    }
-
-    function perch() {
-      // Sitzen
-      const { x, y, angle } = endTransformFrom(el);
-      const jitter = (Math.random() * 24 - 12) * (Math.PI / 180);
-      const landAngle = angle + jitter;
-
-      el.style.transform = `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`;
-      el.classList.add('perching');
-      el.classList.remove('walking');
-
-      isPerchingLocal = true; // ab jetzt auf Maus reagieren
-
-      // Optional: ab und zu kurzer oder langer Walk
-      const doLong = Math.random() < 0.4;
-      const doShort = !doLong && Math.random() < 0.5;
-
-      if (doLong) {
-        const longDur = 5000 + Math.floor(Math.random() * 5001);
-        const totalDist = 80 + Math.random() * 140;
-
-        let { keyframes, options } = buildChaoticLongWalkKeyframes(x, y, landAngle, longDur, totalDist);
-        const startKF = { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})`, offset: 0 };
-        if (!(keyframes.length && keyframes[0].offset === 0)) {
-          keyframes = [startKF, ...keyframes].sort((a,b)=> (a.offset??0)-(b.offset??0));
-        } else keyframes[0] = startKF;
-
-        el.classList.add('walking'); // Beine aus, Flügel bleiben gefaltet (per CSS)
-        el.style.transform = startKF.transform;
-
-        try { anim?.cancel(); } catch {}
-        anim = el.animate(keyframes, options);
-
-        anim.onfinish = () => {
-          try { anim.commitStyles?.(); } catch {}
-          const lastKF = anim.effect?.getKeyframes?.().slice(-1)[0];
-          if (lastKF?.transform) el.style.transform = lastKF.transform;
-          anim.cancel();
-          el.classList.remove('walking');
-          const perchMs = cssVar('--perch-time', 5000);
-          perchTimer = setTimeout(() => flyCycle(), perchMs);
-        };
-
-      } else if (doShort) {
-        el.classList.add('walking');
-
-        const minDist = cssVar('--fly-walk-min', 36);
-        const maxDist = cssVar('--fly-walk-max', 64);
-        const dist = minDist + Math.random() * (maxDist - minDist);
-
-        const minDur = cssVar('--fly-walk-dur-min', 1400);
-        const maxDur = cssVar('--fly-walk-dur-max', 2000);
-        const duration = Math.floor(minDur + Math.random() * (maxDur - minDur));
-
-        const dirX = Math.cos(landAngle), dirY = Math.sin(landAngle);
-        let fwdX = -dirY, fwdY = dirX;
-        if (fwdY > 0) { fwdX = -fwdX; fwdY = -fwdY; }
-        const orthoX = -fwdY, orthoY = fwdX;
-
-        const sideSign = Math.random() < 0.5 ? -1 : 1;
-        const sideAmp = dist * (0.08 + Math.random() * 0.06);
-
-        const endDx = fwdX * dist, endDy = fwdY * dist;
-        const midDx = fwdX * (dist * 0.5) + orthoX * (sideAmp * sideSign);
-        const midDy = fwdY * (dist * 0.5) + orthoY * (sideAmp * sideSign);
-        const rotAmp = 0.020 * sideSign;
-
-        const kf = [
-          { transform: `translate(${x}px, ${y}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
-          { transform: `translate(${x + midDx}px, ${y + midDy}px) rotate(${landAngle + rotAmp}rad) scale(${SIT_SCALE})` },
-          { transform: `translate(${x + endDx}px, ${y + endDy}px) rotate(${landAngle}rad) scale(${SIT_SCALE})` },
-        ];
-
-        try { anim?.cancel(); } catch {}
-        anim = el.animate(kf, { duration, easing: 'ease-in-out', fill: 'forwards' });
-        anim.onfinish = () => {
-          try { anim.commitStyles?.(); } catch {}
-          anim.cancel();
-          el.classList.remove('walking');
-          const perchMs = cssVar('--perch-time', 5000);
-          perchTimer = setTimeout(() => flyCycle(), perchMs);
-        };
-
-      } else {
-        const perchMs = cssVar('--perch-time', 5000);
-        perchTimer = setTimeout(() => flyCycle(), perchMs);
-      }
-    }
-
-    flyCycle(); // Start
-  }
-
-
-  spawnFly();
-  setButtonState(true);
+  // Eine Fliege zum Start.
+  flyEl = createFly();
   updateButtonLabel();
 })();
